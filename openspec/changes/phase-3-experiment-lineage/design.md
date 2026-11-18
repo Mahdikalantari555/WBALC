@@ -1,0 +1,12 @@
+## Decisions
+
+- **Dataset version identity.** Compute SHA-256 while streaming the original upload (no second full read where practical) and persist byte size/hash plus inspected grid, ordered band descriptions/names/dtypes, nodata/mask metadata and declared sensor/schema. Dataset records are immutable snapshots; metadata edits create a new metadata version or a new Dataset, never rewrite original raster bytes. Legacy rows receive `provenance_status=legacy_incomplete`; do not hash an unavailable or later-mutated file and call it original.
+- **Run manifest.** Persist an immutable JSON manifest with Dataset IDs and content hashes, Scene IDs/hashes where applicable, ordered label IDs/versions and canonical snapshot hash, taxonomy/config version, feature schema, model type/parameters, resolution, seed, evaluation protocol/split identifiers, application revision, dependency lock hash, and creation time. Exclude secrets, machine-local absolute paths and tokens.
+- **Hash semantics.** Define canonical JSON serialization (UTF-8, sorted keys, stable numeric/string representation) for manifest and label snapshot hashes. Hash original uploaded bytes and checkpoint/export artifact bytes separately. Hashes identify content; they do not themselves guarantee reproducible floating-point execution.
+- **Experiment grouping.** Add an Experiment entity with name/description/config snapshot and explicit immutable membership links to TrainingRuns/other analytical runs. Grouping existing runs never changes their run manifests. Repeating a run creates a new immutable record.
+- **Query linkage.** Phase 2 QueryBatch stores its context; Phase 3 may link each batch to an Experiment and later TrainingRun, but does not rewrite item selection history.
+- **Artifact integrity.** Compute checkpoint hash after atomic save and export hash after reopened validation. API returns stable checksums and metadata, not file-system paths. A missing/mismatched artifact is reported as integrity failure; do not silently serve corrupted artifacts.
+- **Migrations.** Versioned additive migration. Existing TrainingRun/Export rows get nullable manifest/hash fields and explicit incomplete provenance status; no guessed values. Avoid destructive backfills or DB rebuilds.
+
+## Verification
+Synthetic fixtures validate deterministic manifests/hashes, label correction snapshot changes, Dataset byte immutability, checkpoint/export hash verification, run comparison and legacy migration. Test against fresh and pre-existing schemas. Do not require real imagery/network.
