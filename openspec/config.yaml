@@ -1,0 +1,16 @@
+schema: spec-driven
+
+context: |
+  WBALC is a research-oriented water-body monitoring system built from the inspected RSAL baseline.
+  Existing backend conventions are FastAPI, async SQLAlchemy, rasterio and local immutable source files;
+  the frontend is Next.js/React with React Query and the existing workspace design system.
+  New scene records must preserve each acquisition's native grid and sensor-specific metadata. This change
+  establishes project/scene ingestion only; it does not implement classification or Active Learning.
+
+rules:
+  proposal:
+    - State the motivation, scope, capabilities, impact, and explicit non-goals.
+  design:
+    - Record compatibility, migration, and raster-grid decisions before implementation.
+  tasks:
+    - Keep tasks incremental and mark complete only after code and verification exist.

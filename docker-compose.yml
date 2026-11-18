@@ -1,0 +1,54 @@
+services:
+  api:
+    build:
+      context: .
+      args:
+        # Override on slow/restricted networks via .env or --build-arg.
+        PIP_INDEX_URL: "${PIP_INDEX_URL:-https://pypi.org/simple}"
+    ports:
+      - "8000:8000"
+    environment:
+      STORAGE_DIR: /data/storage
+      # SQLite by default (inside the volume). For Postgres, start the
+      # `postgres` profile and set:
+      # DATABASE_URL: postgresql+asyncpg://rsal:rsal@db:5432/rsal
+    volumes:
+      - rsal-data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
+    ports:
+      - "3000:3000"
+    environment:
+      RSAL_API_URL: http://api:8000
+    # Wait until the API healthcheck passes before starting the UI.
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Optional: production-style database. Enable with:
+  #   docker compose --profile postgres up -d
+  # and set DATABASE_URL on the api service as shown above.
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: rsal
+      POSTGRES_PASSWORD: rsal
+      POSTGRES_DB: rsal
+    volumes:
+      - rsal-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rsal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rsal-data:
+  rsal-pg:
