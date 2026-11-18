@@ -64,3 +64,12 @@ Corrections to the previous report:
 - Streaming pixel inference and buffered (non-block-boundary) spatial validation.
 - OGC polygon topology validation; label `sample_id` forgery hardening.
 - Pixel-mode training is API-only; the workspace trains patch models.
+
+## Performance audit (separate deliverable)
+
+[`PERFORMANCE.md`](PERFORMANCE.md) is the dedicated performance audit: live
+latency measurements for the engine and the SvelteKit adapter, bundle sizes, the
+scaling behaviour on a 1024² and a 2048² scene, ranked bottlenecks and
+recommendations. It is not a stabilization record — this file stays scoped to
+correctness. Two findings from that audit were fixed in the workspace under this
+change (per-view code splitting and map-field memoization).

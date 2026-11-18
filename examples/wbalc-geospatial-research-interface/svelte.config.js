@@ -1,15 +1,23 @@
-import adapter from '@sveltejs/adapter-static';
+import adapter from '@sveltejs/adapter-node';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
+/**
+ * The example runs against a live backend, so it is built as a Node server:
+ * the adapter route handlers in `src/routes/api/**` need a runtime that can
+ * reach RSAL_API_URL (a static export cannot).
+ */
 /** @type {import('@sveltejs/kit').Config} */
-export default {
+const config = {
+  preprocess: vitePreprocess(),
   kit: {
-    adapter: adapter(),
+    adapter: adapter({ out: 'build' }),
     files: { assets: 'public' },
-    prerender: {
-      handleMissingId: ({ id, message }) => {
-        // The workspace uses hash navigation so deep links work on a static host.
-        if (!/^\/(map|overview|temporal|learning|arena|evaluation)$/.test(id)) throw new Error(message);
-      },
+    alias: {
+      $lib: 'src/lib',
     },
+    // The app is same-origin: it posts only to its own /api routes.
+    csrf: { trustedOrigins: [] },
   },
 };
+
+export default config;

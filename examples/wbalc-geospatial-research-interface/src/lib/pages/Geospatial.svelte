@@ -1,171 +1,319 @@
 <script lang="ts">
-  import { ArrowRight, Download, Droplets, Focus, Layers, Leaf, MapPin, Scan, X } from '@lucide/svelte';
-  import PageHeading from '../components/PageHeading.svelte';
+  import { Download, Focus, Layers, MapPin, RotateCw, Scan, X } from '@lucide/svelte';
+  import EmptyState from '../components/EmptyState.svelte';
   import InteractiveMap from '../components/InteractiveMap.svelte';
-  import { classes, fmtDate, getModel, getObservation, pct, project, samples, sensorDetails } from '../data/research';
-  import { classificationFeatures, download, geojson, pointFeature, studyAreaFeature, type ExportFeature } from '../data/exports';
-  import { getWorkspace, type MapLayer, type Selection, type WorkspaceProps } from '../state.svelte';
+  import PageHeading from '../components/PageHeading.svelte';
+  import { api } from '../client/api';
+  import { classColor } from '../palette';
+  import { getWorkspace, type MapLayer, type Selection } from '../state.svelte';
+  import { useT } from '../t.svelte';
+  import type { MapFieldView } from '../types';
 
-  let { go, notify }: WorkspaceProps = $props();
   const workspace = getWorkspace();
-  const observation = $derived(getObservation(workspace.observation));
-  const model = $derived(getModel(workspace.model));
-  const selected = $derived(workspace.map.selected);
-  const sample = $derived(selected?.kind === 'sample' ? samples.find(item => item.id === selected.id) : undefined);
-  const sampleReview = $derived(sample ? workspace.reviews[sample.id] : undefined);
-  const visible = $derived(Object.values(workspace.map.layers).filter(Boolean).length - (workspace.map.basemap === 'terrain' && workspace.map.layers.imagery ? 1 : 0));
-  const layerRows = [
-    { id: 'imagery', title: 'Satellite imagery', note: 'Local simulated basemap', icon: Scan, tone: '#b4c0cf' },
-    { id: 'classification', title: 'Classification', note: 'Open water and vegetation', icon: Layers, tone: '#66bfff' },
-    { id: 'boundary', title: 'Study area boundary', note: 'Zarivar Lake AOI', icon: Focus, tone: '#78dccd' },
-    { id: 'samples', title: 'Reference samples', note: 'Human review locations', icon: MapPin, tone: '#e9bf73' },
-  ] as const;
+  const { t, integer, percent, number, date } = useT();
 
-  function toggle(layer: MapLayer) {
-    const enabled = workspace.map.layers[layer] = !workspace.map.layers[layer];
-    if (!enabled && selected) {
-      if ((layer === 'classification' && (selected.kind === 'water' || selected.kind === 'vegetation')) ||
-          (layer === 'boundary' && selected.kind === 'boundary') || (layer === 'samples' && selected.kind === 'sample')) workspace.map.selected = null;
-    }
+  const dataset = $derived(workspace.dataset);
+  const hard = $derived(workspace.field.hard as MapFieldView | null);
+  const uncertainty = $derived(workspace.field.uncertainty as MapFieldView | null);
+  const selected = $derived(workspace.map.selected);
+
+  const layers = $derived([
+    { id: 'imagery' as const, title: t('map.layer.imagery'), note: t('map.layer.imageryNote'), icon: Scan },
+    { id: 'classification' as const, title: t('map.layer.classification'), note: t('map.layer.classificationNote'), icon: Layers },
+    { id: 'uncertainty' as const, title: t('map.layer.uncertainty'), note: t('map.layer.uncertaintyNote'), icon: Focus },
+    { id: 'samples' as const, title: t('map.layer.samples'), note: t('map.layer.samplesNote'), icon: MapPin },
+  ]);
+
+  const visible = $derived(Object.values(workspace.map.layers).filter(Boolean).length);
+
+  /** Adapter reason codes are stable identifiers, not English prose. */
+  function georefKey(reason: 'not-georeferenced' | 'unsupported-crs' | 'non-axis-aligned' | null) {
+    if (reason === 'unsupported-crs') return 'map.georef.unsupportedCrs' as const;
+    if (reason === 'non-axis-aligned') return 'map.georef.nonAxisAligned' as const;
+    return 'map.georef.notGeoreferenced' as const;
   }
 
-  function selectFeature(feature: Selection) { workspace.map.selected = feature; }
+  const sample = $derived(
+    selected?.kind === 'sample'
+      ? workspace.labels.find((label) => label.sampleId === selected.sampleId) ?? null
+      : null,
+  );
 
-  function reviewSample() {
-    workspace.selectedSample = sample?.id ?? samples.find(item => !workspace.reviews[item.id] && item.prediction === selected?.kind)?.id ?? null;
-    go('learning');
+  const cell = $derived.by(() => {
+    if (selected?.kind !== 'cell' || !hard) return null;
+    const row = hard.values[selected.row]?.[selected.col];
+    const valid = hard.valid[selected.row]?.[selected.col];
+    return {
+      row: selected.row,
+      col: selected.col,
+      valid: Boolean(valid),
+      className: row !== null && row !== undefined ? hard.classes[row] ?? null : null,
+      uncertainty: uncertainty?.values[selected.row]?.[selected.col] ?? null,
+      confidence: null as number | null,
+    };
+  });
+
+  function toggle(layer: MapLayer) {
+    const next = !workspace.map.layers[layer];
+    workspace.map.layers[layer] = next;
+    if ((layer === 'classification' || layer === 'uncertainty') && workspace.latestRun) {
+      void workspace.loadMapField();
+    }
+    if (!next && layer === 'samples' && selected?.kind === 'sample') workspace.map.selected = null;
+  }
+
+  function select(feature: Selection) {
+    workspace.map.selected = feature;
   }
 
   function exportView() {
-    const features: ExportFeature[] = [];
-    if (workspace.map.layers.classification && workspace.map.opacity > 0) features.push(...classificationFeatures(observation, model));
-    if (workspace.map.layers.boundary) features.push(studyAreaFeature());
-    if (workspace.map.layers.samples) features.push(...samples.map(item => pointFeature(item.point, {
-      id: item.id, date: item.observation, prediction: classes[item.prediction].name,
-      reviewed: Boolean(workspace.reviews[item.id]), label: workspace.reviews[item.id] ? classes[workspace.reviews[item.id].label].name : '',
-    })));
-    if (!features.length) { notify('Turn on a vector layer before exporting.'); return; }
-    download(`wbalc-map-${observation.date}.geojson`, 'application/geo+json', geojson(features));
-    notify('Simulated map layers exported as GeoJSON.');
+    if (!dataset) return;
+    const url = api.exportUrl(workspace.project!.id, {
+      type: workspace.map.layers.uncertainty ? 'uncertainty' : 'hard',
+      datasetId: dataset.id,
+      method: workspace.map.method,
+    });
+    window.location.assign(url);
+    workspace.notify(t('map.exportView'));
+  }
+
+  function retryField() {
+    void workspace.loadMapField();
   }
 </script>
 
-<PageHeading title="Geospatial Workspace" description="Explore satellite observations and water-body classifications at Zarivar Lake.">
-  {#snippet actions()}<button class="button" onclick={exportView} title="Download the visible vector layers as GeoJSON"><Download size={15} /> Export view</button>{/snippet}
+<PageHeading
+  title={t('map.title')}
+  description={t('map.description')}
+  eyebrow={workspace.project ? `#${workspace.project.id} · ${workspace.project.name}` : 'WBALC'}
+>
+  {#snippet actions()}
+    <button class="button" onclick={exportView} disabled={!dataset || !workspace.latestRun}>
+      <Download size={15} /> {t('map.exportView')}
+    </button>
+  {/snippet}
 </PageHeading>
 
-<div class="map-workspace">
-  <InteractiveMap settings={workspace.map} {observation} {model} reviews={workspace.reviews} onselect={selectFeature}
-    onbasemap={(basemap) => { workspace.map.basemap = basemap; }} />
+{#if !dataset}
+  <div class="surface">
+    <EmptyState title={t('map.noDataset')} hint={t('map.noDatasetHint')} />
+  </div>
+{:else}
+  <div class="map-workspace">
+    <div class="stack">
+      <InteractiveMap {dataset} {hard} {uncertainty} labels={workspace.labels} onselect={select} />
 
-  <aside class="map-sidebar" aria-label="Map layers and feature details">
-    <section class="surface layer-panel" aria-labelledby="layer-heading">
-      <div class="panel-heading"><div class="panel-heading-title"><Layers size={16} strokeWidth={1.75} /><h2 id="layer-heading">Map layers</h2></div><span class="visible-count mono">{visible} visible</span></div>
-      {#each layerRows as layer}
-        <div class="layer-row-group" class:is-off={!workspace.map.layers[layer.id]}>
-          <div class="layer-row">
-            <span class="layer-icon" style:--layer-color={layer.tone}><layer.icon size={15} strokeWidth={1.7} /></span>
-            <div class="layer-description"><strong>{layer.title}</strong><small>{layer.id === 'imagery' && workspace.map.basemap === 'terrain' ? 'Satellite basemap not selected' : layer.note}</small></div>
-            <button class="layer-switch" role="switch" aria-checked={workspace.map.layers[layer.id] && (layer.id !== 'imagery' || workspace.map.basemap === 'satellite')}
-              aria-label={layer.title} disabled={layer.id === 'imagery' && workspace.map.basemap === 'terrain'} onclick={() => toggle(layer.id)}><span></span></button>
+      {#if workspace.fieldError}
+        <div class="inline-error" role="alert">
+          <X size={16} />
+          <div>
+            <strong>{t('map.noModel')}</strong>
+            <span>{workspace.fieldError}</span>
           </div>
-          {#if layer.id === 'classification'}
-            <div class="layer-opacity">
-              <label for="classification-opacity"><span>Opacity</span><span class="mono">{workspace.map.opacity}%</span></label>
-              <input id="classification-opacity" aria-label="Classification opacity" type="range" min="0" max="100" bind:value={workspace.map.opacity}
-                disabled={!workspace.map.layers.classification} style:--fill={`${workspace.map.opacity}%`} />
-            </div>
-          {/if}
+          <button class="button small" onclick={retryField}><RotateCw size={13} /> {t('common.retry')}</button>
         </div>
-      {/each}
-    </section>
-
-    <section class="surface feature-panel" aria-labelledby="feature-heading">
-      <div class="panel-heading"><div class="panel-heading-title"><Focus size={16} strokeWidth={1.75} /><h2 id="feature-heading">Selected feature</h2></div>
-        {#if selected}<button class="icon-button" aria-label="Clear selected feature" title="Clear selection" onclick={() => { workspace.map.selected = null; }}><X size={15} /></button>{/if}
-      </div>
-      {#if selected}
-        <div class="panel-body feature-body">
-          {#if sample}
-            <div class="feature-name"><div class="feature-icon sample"><MapPin size={18} /></div><div><strong>{sample.id}</strong><small>{sample.location}</small></div></div>
-            <dl class="kv-list">
-              <div><dt>Prediction</dt><dd>{classes[sample.prediction].name}</dd></div>
-              <div><dt>Uncertainty</dt><dd class="feature-warning">{pct(sample.uncertainty)}</dd></div>
-              <div><dt>Review label</dt><dd>{sampleReview ? classes[sampleReview.label].name : 'Pending'}</dd></div>
-              <div><dt>Observation</dt><dd>{fmtDate(sample.observation)}</dd></div>
-            </dl>
-          {:else if selected.kind === 'boundary'}
-            <div class="feature-name"><div class="feature-icon boundary"><Focus size={18} /></div><div><strong>Zarivar Lake AOI</strong><small>Study boundary</small></div></div>
-            <dl class="kv-list">
-              <div><dt>Project ID</dt><dd>{project.id}</dd></div>
-              <div><dt>Study area</dt><dd>{project.area.toFixed(2)} km&sup2;</dd></div>
-              <div><dt>Location</dt><dd>{project.location}</dd></div>
-              <div><dt>Geometry</dt><dd>Schematic</dd></div>
-            </dl>
-          {:else}
-            {@const isWater = selected.kind === 'water'}
-            {@const classKey = isWater ? 'water' : 'vegetation'}
-            <div class="feature-name"><div class="feature-icon" class:vegetation={!isWater}>{#if isWater}<Droplets size={18} strokeWidth={1.65} />{:else}<Leaf size={18} strokeWidth={1.65} />{/if}</div>
-              <div><strong>{classes[classKey].name}</strong><small>{model.name} / simulated</small></div>
-            </div>
-            <dl class="kv-list">
-              <div><dt>Feature ID</dt><dd>{isWater ? 'ZL-OW-041' : 'ZL-AV-041'}</dd></div>
-              <div><dt>Area</dt><dd>{(isWater ? observation.water : observation.vegetation).toFixed(2)} km&sup2;</dd></div>
-              <div><dt>Confidence</dt><dd class="feature-confidence">{pct((isWater ? .968 : .884) - (model.id === 'unet' ? .032 : model.id === 'sar' ? .101 : 0))}</dd></div>
-              <div><dt>Source</dt><dd>{sensorDetails[observation.sensor].product}</dd></div>
-            </dl>
-          {/if}
-          <div class="feature-action">
-            {#if selected.kind === 'boundary'}<button class="button-link" onclick={() => go('overview')}>View project overview <ArrowRight size={14} /></button>
-            {:else}<button class="button-link" onclick={reviewSample}>{sample ? 'Open in Active Learning' : 'Review samples'} <ArrowRight size={14} /></button>{/if}
-          </div>
+      {:else if !workspace.latestRun}
+        <div class="surface section-box hint-box">
+          <strong>{t('map.noModel')}</strong>
+          <p>{t('map.noModelHint')}</p>
         </div>
-      {:else}
-        <div class="empty-state"><Focus size={20} /><strong>No feature selected</strong><span>Click a classification, sample, or boundary to inspect it.</span></div>
       {/if}
-    </section>
-  </aside>
-</div>
+    </div>
+
+    <aside class="map-sidebar" aria-label={t('map.layers')}>
+      <section class="surface layer-panel" aria-labelledby="layer-heading">
+        <div class="panel-heading">
+          <div class="panel-heading-title"><Layers size={16} strokeWidth={1.75} /><h2 id="layer-heading">{t('map.layers')}</h2></div>
+          <span class="visible-count mono">{t('map.visible', { count: visible })}</span>
+        </div>
+        {#each layers as layer (layer.id)}
+          <div class="layer-row-group" class:is-off={!workspace.map.layers[layer.id]}>
+            <div class="layer-row">
+              <span class="layer-icon"><layer.icon size={15} strokeWidth={1.7} /></span>
+              <div class="layer-description"><strong>{layer.title}</strong><small>{layer.note}</small></div>
+              <button
+                class="layer-switch"
+                role="switch"
+                aria-checked={workspace.map.layers[layer.id]}
+                aria-label={layer.title}
+                onclick={() => toggle(layer.id)}
+                ><span></span></button
+              >
+            </div>
+            {#if layer.id === 'classification' || layer.id === 'uncertainty'}
+              <div class="layer-opacity">
+                <label for={`${layer.id}-opacity`}>
+                  <span>{t('map.opacity')}</span><span class="mono ltr-numeric">{workspace.map.opacity}%</span>
+                </label>
+                <input
+                  id={`${layer.id}-opacity`}
+                  aria-label={t('map.opacity')}
+                  type="range"
+                  min="0"
+                  max="100"
+                  bind:value={workspace.map.opacity}
+                  disabled={!workspace.map.layers[layer.id]}
+                  style:--fill={`${workspace.map.opacity}%`}
+                />
+              </div>
+            {/if}
+            {#if layer.id === 'uncertainty'}
+              <div class="layer-opacity">
+                <label for="uncertainty-method"><span>{t('map.uncertaintyMethod')}</span></label>
+                <select
+                  id="uncertainty-method"
+                  class="select"
+                  value={workspace.map.method}
+                  onchange={(event) => {
+                    workspace.map.method = event.currentTarget.value as typeof workspace.map.method;
+                    void workspace.loadMapField();
+                  }}
+                >
+                  <option value="entropy">{t('map.method.entropy')}</option>
+                  <option value="margin">{t('map.method.margin')}</option>
+                  <option value="least_confidence">{t('map.method.leastConfidence')}</option>
+                </select>
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </section>
+
+      <section class="surface feature-panel" aria-labelledby="feature-heading">
+        <div class="panel-heading">
+          <div class="panel-heading-title"><Focus size={16} strokeWidth={1.75} /><h2 id="feature-heading">{t('map.selection')}</h2></div>
+          {#if selected}
+            <button class="icon-button" aria-label={t('map.clearSelection')} title={t('map.clearSelection')} onclick={() => (workspace.map.selected = null)}><X size={15} /></button>
+          {/if}
+        </div>
+
+        {#if sample}
+          <div class="panel-body feature-body">
+            <div class="feature-name">
+              <div class="feature-icon sample"><MapPin size={18} /></div>
+              <div><strong>{sample.sampleId}</strong><small>{sample.className}</small></div>
+            </div>
+            <dl class="kv-list">
+              <div><dt>{t('common.class')}</dt><dd style:color={classColor(sample.className, 0)}>{sample.className}</dd></div>
+              <div><dt>{t('map.sampleReview')}</dt><dd>{sample.className}</dd></div>
+              <div><dt>{t('common.dataset')}</dt><dd>{workspace.datasets.find((item) => item.id === sample.datasetId)?.name ?? '—'}</dd></div>
+              <div><dt>{t('common.date')}</dt><dd>{date(sample.createdAt)}</dd></div>
+              <div><dt>v</dt><dd>{integer(sample.version)}</dd></div>
+              <div><dt>{t('arena.resolution')}</dt><dd>{sample.sampleType}</dd></div>
+            </dl>
+            <div class="feature-action">
+              <button
+                class="button-link"
+                onclick={() => {
+                  workspace.selectedSample = sample.sampleId;
+                  workspace.go('learning');
+                }}>{t('map.openInLearning')}</button
+              >
+            </div>
+          </div>
+        {:else if cell}
+          <div class="panel-body feature-body">
+            <div class="feature-name">
+              <div class="feature-icon"><Layers size={18} /></div>
+              <div>
+                <strong>{cell.className ?? t('common.notAvailable')}</strong>
+                <small>r{cell.row} · c{cell.col}</small>
+              </div>
+            </div>
+            <dl class="kv-list">
+              <div><dt>{t('map.cell')}</dt><dd class="ltr-numeric">{cell.row}, {cell.col}</dd></div>
+              <div><dt>{t('map.predictedClass')}</dt><dd>{cell.className ?? '—'}</dd></div>
+              <div><dt>{t('common.validity')}</dt><dd>{cell.valid ? '✓' : '—'}</dd></div>
+              <div><dt>{t('map.uncertainty')}</dt><dd>{percent(cell.uncertainty)}</dd></div>
+              <div>
+                <dt>{t('map.grid')}</dt>
+                <dd>{hard?.resolution === 'pixel' ? t('map.grid.pixel') : t('map.grid.patch', { size: hard?.grid.patchSize ?? 0 })}</dd>
+              </div>
+              <div><dt>{t('common.model')}</dt><dd>#{hard?.iteration ?? '—'}</dd></div>
+            </dl>
+          </div>
+        {:else}
+          <EmptyState title={t('map.noSelection')} hint={t('map.noSelectionHint')} />
+        {/if}
+      </section>
+
+      <section class="surface section-box">
+        <div class="section-heading"><div><h2>{t('map.dataset')}</h2><p>{dataset.name}</p></div></div>
+        <dl class="kv-list">
+          <div><dt>{t('temporal.grid')}</dt><dd class="ltr-numeric">{integer(dataset.width)} × {integer(dataset.height)}</dd></div>
+          <div><dt>{t('temporal.channels')}</dt><dd>{integer(dataset.bands)} · {dataset.dtype}</dd></div>
+          <div><dt>{t('temporal.crs')}</dt><dd>{dataset.crs ?? t('map.pixelSpace')}</dd></div>
+          <div><dt>{t('map.grid')}</dt><dd>{dataset.patchGrid ? `${dataset.patchGrid.patchSize}px / ${dataset.patchGrid.stride}px` : '—'}</dd></div>
+          <div><dt>{t('project.created')}</dt><dd>{date(dataset.createdAt)}</dd></div>
+          <div><dt>{t('common.source')}</dt><dd>{number(dataset.sizeBytes / 1_048_576, 1)} MB</dd></div>
+          <div>
+            <dt>{t('project.studyArea')}</dt>
+            <dd>
+              {#if workspace.project?.studyAreaGeometry}
+                {t('map.studyAreaRecorded')}
+              {:else}
+                {t('project.noGeometry')}
+              {/if}
+            </dd>
+          </div>
+        </dl>
+        {#if workspace.project?.studyAreaGeometry}
+          <p class="mask-note">{t('map.studyAreaNotMasked')}</p>
+        {/if}
+        {#if dataset.georeferenced === false && dataset.georefReason}
+          <p class="mask-note">{t('map.pixelSpaceReason', { reason: t(georefKey(dataset.georefReason)) })}</p>
+        {/if}
+      </section>
+    </aside>
+  </div>
+{/if}
 
 <style>
-  .map-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 285px; align-items: start; gap: 15px; }
+  .map-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 292px; align-items: start; gap: 15px; }
   .map-sidebar { display: grid; gap: 14px; min-width: 0; }
   .visible-count { color: #92a9bf; font-size: 10px; }
   .layer-row-group { margin-inline: 13px; }
   .layer-row-group + .layer-row-group { border-top: 1px solid var(--line); }
-  .layer-row { display: flex; align-items: center; gap: 10px; min-height: 58px; padding: 6px 0; }
-  .layer-icon { display: grid; place-items: center; width: 29px; height: 29px; flex: none; color: var(--layer-color); background: color-mix(in srgb, var(--layer-color) 12%, #102030); border: 1px solid color-mix(in srgb, var(--layer-color) 21%, #1f3140); border-radius: 5px; }
+  .mask-note { margin: 9px 13px 11px; color: var(--faint); font-size: 10.5px; line-height: 1.5; }
+  .layer-row { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 6px 0; }
+  .layer-icon { display: grid; place-items: center; width: 29px; height: 29px; flex: none; color: #8fd6d0; background: #14283a; border: 1px solid #24404f; border-radius: 5px; }
   .layer-description { display: grid; gap: 3px; min-width: 0; }
   .layer-description strong { font-size: 12px; font-weight: 570; line-height: 1.25; }
   .layer-description small { color: var(--faint); font-size: 10.5px; line-height: 1.25; }
-  .layer-switch { width: 30px; height: 17px; flex: none; margin-left: auto; display: flex; align-items: center; padding: 2px; background: #263848; border: 1px solid #496174; border-radius: 15px; transition: background 160ms, border-color 160ms; }
+  .layer-switch { width: 30px; height: 17px; flex: none; margin-inline-start: auto; display: flex; align-items: center; padding: 2px; background: #263848; border: 1px solid #496174; border-radius: 15px; transition: background 160ms, border-color 160ms; }
   .layer-switch span { width: 11px; height: 11px; border-radius: 50%; background: #a2b2be; transition: transform 160ms, background 160ms; }
-  .layer-switch[aria-checked=true] { background: #3c9b91; border-color: #55b9a9; }
-  .layer-switch[aria-checked=true] span { transform: translateX(13px); background: #eafff9; }
-  .layer-switch:hover:not(:disabled) { border-color: #b2f3e5; }
-  .layer-opacity { margin: -1px 0 13px 39px; }
+  .layer-switch[aria-checked='true'] { background: #3c9b91; border-color: #55b9a9; }
+  .layer-switch[aria-checked='true'] span { transform: translateX(13px); background: #eafff9; }
+  .layer-opacity { margin: -1px 0 12px 39px; }
   .layer-opacity label { display: flex; justify-content: space-between; font-size: 10.5px; color: #a3b4c9; margin-bottom: 4px; }
   .layer-opacity .mono { color: #94e8db; }
-  .layer-opacity input { display: block; appearance: none; cursor: pointer; width: 100%; height: 14px; margin: 0; background: transparent; }
-  .layer-opacity input:disabled { cursor: not-allowed; opacity: .4; }
-  .layer-opacity input::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, #63dcca var(--fill), #33485b var(--fill)); }
-  .layer-opacity input::-moz-range-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, #63dcca var(--fill), #33485b var(--fill)); }
-  .layer-opacity input::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: #87e9d9; border: 1px solid #b6f1e6; }
-  .layer-opacity input::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: #87e9d9; border: 1px solid #b6f1e6; }
-  .is-off .layer-icon { opacity: .56; }
+  .layer-opacity input[type='range'] { display: block; appearance: none; cursor: pointer; width: 100%; height: 14px; margin: 0; background: transparent; }
+  .layer-opacity input[type='range']:disabled { cursor: not-allowed; opacity: 0.4; }
+  .layer-opacity input[type='range']::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, #63dcca var(--fill), #33485b var(--fill)); }
+  .layer-opacity input[type='range']::-moz-range-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, #63dcca var(--fill), #33485b var(--fill)); }
+  .layer-opacity input[type='range']::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: #87e9d9; border: 1px solid #b6f1e6; }
+  .layer-opacity input[type='range']::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: #87e9d9; border: 1px solid #b6f1e6; }
+  .layer-opacity .select { width: 100%; min-height: 30px; font-size: 11px; }
+  .is-off .layer-icon { opacity: 0.56; }
   .feature-name { display: flex; gap: 10px; align-items: center; margin: 0 0 9px; }
   .feature-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 6px; background: #173b5a; border: 1px solid #28567b; color: #79caff; }
-  .feature-icon.vegetation { background: #1d3e35; border-color: #365d4b; color: #9fe7ac; }
-  .feature-icon.boundary { background: #193d43; border-color: #37565d; color: var(--accent); }
   .feature-icon.sample { background: #453724; border-color: #69563a; color: var(--warn); }
   .feature-name strong { display: block; font-size: 14px; font-weight: 640; }
   .feature-name small { display: block; font-size: 10.5px; color: var(--faint); margin-top: 1px; }
   .feature-body .kv-list > div { padding-block: 7px; }
   .feature-body .kv-list dd { font-size: 11px; }
-  .feature-body .kv-list dd.feature-confidence { color: var(--accent); }
-  .feature-body .kv-list dd.feature-warning { color: var(--warn); }
   .feature-action { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 10px; }
-  @media (max-width: 1150px) { .map-workspace { grid-template-columns: minmax(0, 1fr) 252px; gap: 12px; } .layer-row { gap: 8px; } }
-  @media (max-width: 920px) { .map-workspace { grid-template-columns: minmax(0, 1fr); } .map-sidebar { grid-template-columns: 1fr 1fr; align-items: start; gap: 12px; } }
-  @media (max-width: 590px) { .map-sidebar { grid-template-columns: minmax(0, 1fr); } }
+  .hint-box { display: grid; gap: 4px; }
+  .hint-box strong { font-size: 12.5px; }
+  .hint-box p { margin: 0; color: var(--faint); font-size: 11.5px; }
+  @media (max-width: 1150px) {
+    .map-workspace { grid-template-columns: minmax(0, 1fr) 252px; gap: 12px; }
+  }
+  @media (max-width: 920px) {
+    .map-workspace { grid-template-columns: minmax(0, 1fr); }
+    .map-sidebar { grid-template-columns: 1fr 1fr; align-items: start; gap: 12px; }
+  }
+  @media (max-width: 590px) {
+    .map-sidebar { grid-template-columns: minmax(0, 1fr); }
+  }
 </style>

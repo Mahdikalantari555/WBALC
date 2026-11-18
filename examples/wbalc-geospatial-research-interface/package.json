@@ -4,37 +4,38 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "svelte-kit sync && vite --config vite.workspace.config.ts",
-    "build": "svelte-kit sync && vite build --config vite.workspace.config.ts",
-    "preview": "vite preview --config vite.workspace.config.ts",
-    "dev:kit": "svelte-kit sync && vite --config vite.sveltekit.config.ts",
-    "build:kit": "svelte-kit sync && vite build --config vite.sveltekit.config.ts",
-    "preview:kit": "vite preview --config vite.sveltekit.config.ts",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit"
+    "dev": "vite dev --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "start": "node build",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@lucide/svelte": "^1.75.0",
+    "geotiff": "^2.1.3",
     "leaflet": "^1.9.4",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
     "svelte": "^5.57.3"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.11",
+    "@sveltejs/adapter-node": "^5.5.8",
     "@sveltejs/kit": "^2.70.4",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "@tailwindcss/vite": "4.1.17",
     "@types/leaflet": "^1.9.22",
     "@types/node": "22.19.17",
-    "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "5.1.1",
+    "jsdom": "^25.0.1",
     "svelte-check": "^4.7.8",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.7",
-    "vite-plugin-singlefile": "^2.3.4"
+    "vitest": "^3.2.7"
+  },
+  "description": "WBALC geospatial research workspace: a SvelteKit frontend example running against the live WBALC (RSAL) engine, bilingual (en/fa).",
+  "engines": {
+    "node": ">=20.19"
   }
 }

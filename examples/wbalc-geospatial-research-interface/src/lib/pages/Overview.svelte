@@ -1,109 +1,205 @@
 <script lang="ts">
-  import { ArrowRight, CalendarDays, ChartNoAxesCombined, Check, CircleCheck, Layers, MapPin, Tags } from '@lucide/svelte';
+  import { ArrowRight, CalendarDays, Check, CircleDashed, Layers, MapPin, Tags } from '@lucide/svelte';
+  import EmptyState from '../components/EmptyState.svelte';
+  import MetricBar from '../components/MetricBar.svelte';
   import PageHeading from '../components/PageHeading.svelte';
-  import SensorFilter from '../components/SensorFilter.svelte';
-  import MiniScene from '../components/MiniScene.svelte';
-  import WaterChart from '../components/WaterChart.svelte';
-  import { classes, evaluateModel, fmtDate, getModel, latest, observations, pct, project, samples } from '../data/research';
-  import { filterSensor, getWorkspace, type WorkspaceProps } from '../state.svelte';
+  import TimelineChart, { type TimelinePoint } from '../components/TimelineChart.svelte';
+  import { classColor } from '../palette';
+  import { getWorkspace, type ViewId } from '../state.svelte';
+  import { useT } from '../t.svelte';
 
-  let { go }: WorkspaceProps = $props();
   const workspace = getWorkspace();
-  const model = $derived(getModel(workspace.model));
-  const metrics = $derived(evaluateModel(model));
-  const reviewed = $derived(project.archiveReviewed + Object.keys(workspace.reviews).length);
-  const pending = $derived(samples.filter(item => !workspace.reviews[item.id]).length);
-  const newestReview = $derived(Object.entries(workspace.reviews).filter(entry => entry[1].date > '2025-04-15').sort((a, b) => b[1].date.localeCompare(a[1].date))[0]);
+  const { t, date, integer, percent } = useT();
+
+  const project = $derived(workspace.project);
+  const metrics = $derived(workspace.latestRun?.metrics ?? null);
+  const colors = $derived(
+    (project?.classes ?? []).map((name, index) => ({ name, color: classColor(name, index) })),
+  );
+
+  const timeline = $derived<TimelinePoint[]>([
+    ...workspace.scenes
+      .filter((scene) => scene.acquisitionDateTime)
+      .map((scene) => ({
+        id: `scene-${scene.id}`,
+        date: Date.parse(scene.acquisitionDateTime!),
+        label: scene.sourceFilename,
+        sensor: scene.sensor,
+        kind: 'scene' as const,
+      })),
+    ...workspace.datasets.map((dataset) => ({
+      id: `dataset-${dataset.id}`,
+      date: Date.parse(dataset.createdAt),
+      label: dataset.name,
+      sensor: 'Dataset',
+      kind: 'dataset' as const,
+    })),
+  ]);
+
+  const checks = $derived([
+    { key: 'overview.check.dataset' as const, done: workspace.datasets.length > 0 },
+    { key: 'overview.check.labels' as const, done: workspace.labels.length > 0 },
+    { key: 'overview.check.model' as const, done: workspace.runs.length > 0 },
+    { key: 'overview.check.scenes' as const, done: workspace.scenes.length > 0 },
+  ]);
+
+  const go = (view: ViewId) => workspace.go(view);
 </script>
 
-<PageHeading title={'Zarivar Lake \u2014 Water Body Monitoring'} description="A local research project tracking open water and shoreline vegetation with Sentinel-1 and Sentinel-2.">
-  {#snippet actions()}<button class="button primary" onclick={() => go('map')}><MapPin size={15} /> Open map workspace <ArrowRight size={14} /></button>{/snippet}
+<PageHeading
+  title={t('overview.title')}
+  description={t('overview.description', { project: project?.name ?? '—' })}
+  eyebrow={project ? `#${project.id} · ${project.status.toUpperCase()}` : 'WBALC'}
+>
+  {#snippet actions()}
+    <button class="button primary" onclick={() => go('map')}
+      ><MapPin size={15} /> {t('overview.openMap')} <ArrowRight size={14} /></button
+    >
+  {/snippet}
 </PageHeading>
 
 <div class="overview-grid">
   <div class="stack">
-    <section class="surface study-preview">
-      <div class="panel-heading"><div class="panel-heading-title"><MapPin size={16} /><h2>Study area</h2></div><span class="section-label">{project.id} / IRAN</span></div>
-      <a href="#/map" class="preview-map" aria-label="Zarivar Lake: Open latest observation in the map workspace" onclick={(event) => { event.preventDefault(); workspace.observation = latest.date; workspace.sensor = 'all'; go('map'); }}>
-        <MiniScene observation={latest} {model} label="Simulated study area preview near Zarivar Lake" />
-        <span class="preview-annotation"><MapPin size={14} /> Zarivar Lake <ArrowRight size={14} /></span>
-      </a>
-      <div class="study-foot">
-        <span class="mono">{project.area.toFixed(2)} km&sup2; study area</span>
-        <span class="class-label"><i class="class-dot" style:--class-color={classes.water.color}></i>Open Water</span>
-        <span class="class-label"><i class="class-dot" style:--class-color={classes.vegetation.color}></i>Aquatic Vegetation</span>
+    <section class="surface section-box">
+      <div class="section-heading">
+        <div>
+          <h2>{t('overview.series')}</h2>
+          <p>{t('overview.seriesHint', { count: timeline.length })}</p>
+        </div>
+        <CalendarDays size={16} class="faint" />
       </div>
+      <TimelineChart points={timeline} />
+      <p class="engine-note">{t('overview.waterAreaMissing')} — {t('overview.noSeriesHint')}</p>
     </section>
 
-    <section class="surface section-box">
-      <div class="section-heading"><div><h2>Open water area over time</h2><p>Simulated observations / October 2024 to April 2025</p></div><SensorFilter value={workspace.sensor} onchange={(sensor) => filterSensor(workspace, sensor)} /></div>
-      <WaterChart filter={workspace.sensor} selected={workspace.observation} onselect={(date) => { workspace.observation = date; }} />
-      <button class="button-link chart-link" onclick={() => go('temporal')}>Explore temporal analysis <ArrowRight size={14} /></button>
+    <section class="surface">
+      <div class="panel-heading">
+        <div class="panel-heading-title"><Layers size={16} /><h2>{t('overview.studyArea')}</h2></div>
+        <span class="badge-muted">{t('project.id')} #{project?.id}</span>
+      </div>
+      <div class="panel-body">
+        <dl class="kv-list">
+          <div><dt>{t('project.status')}</dt><dd>{project?.status ?? '—'}</dd></div>
+          <div>
+            <dt>{t('project.taxonomy')}</dt>
+            <dd>
+              <span class="chip-row">
+                {#each colors as item}
+                  <span class="chip" style:--chip-color={item.color}><i></i>{item.name}</span>
+                {/each}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>{t('project.binary')}</dt>
+            <dd>
+              {project?.classificationConfig.binaryOutputInterpretation ?? '—'}
+              <small class="dd-note">{t('project.binaryNotApplied')}</small>
+            </dd>
+          </div>
+          <div>
+            <dt>{t('project.studyArea')}</dt>
+            <dd>
+              {#if project?.studyAreaGeometry}
+                {project.studyAreaCrs ?? t('common.unknown')}
+              {:else}
+                {t('project.noGeometry')}
+              {/if}
+            </dd>
+          </div>
+          <div><dt>{t('project.updated')}</dt><dd>{date(project?.updatedAt)}</dd></div>
+        </dl>
+      </div>
     </section>
   </div>
 
   <div class="stack">
     <section class="surface">
-      <div class="panel-heading"><div class="panel-heading-title"><Layers size={16} /><h2>Project status</h2></div><span class="outline-badge">DEMO</span></div>
+      <div class="panel-heading">
+        <div class="panel-heading-title"><CircleDashed size={16} /><h2>{t('overview.status')}</h2></div>
+        <span class="badge-live">RSAL</span>
+      </div>
       <div class="panel-body status-body">
         <dl class="kv-list">
-          <div><dt>Latest observation</dt><dd>{fmtDate(latest.date)}</dd></div>
-          <div><dt>Available observations</dt><dd>{observations.length}</dd></div>
-          <div><dt>Reviewed samples</dt><dd>{reviewed}</dd></div>
-          <div><dt>Classification</dt><dd class="ready-state"><Check size={12} /> {pending ? 'Ready for review' : 'Review complete'}</dd></div>
+          <div><dt>{t('overview.datasets')}</dt><dd>{integer(workspace.datasets.length)}</dd></div>
+          <div><dt>{t('overview.scenes')}</dt><dd>{integer(workspace.scenes.length)}</dd></div>
+          <div><dt>{t('overview.labels')}</dt><dd>{integer(workspace.labels.length)}</dd></div>
+          <div><dt>{t('overview.runs')}</dt><dd>{integer(workspace.runs.length)}</dd></div>
         </dl>
-        <button class="button-link status-link" onclick={() => go('learning')}>{pending ? `Review ${pending} pending samples` : 'View completed reviews'} <ArrowRight size={14} /></button>
+        <button class="button-link status-link" onclick={() => go('learning')}
+          >{t('overview.reviewAction')} <ArrowRight size={14} /></button
+        >
       </div>
     </section>
 
     <section class="surface section-box">
-      <div class="section-heading"><div><h2>Model performance</h2><p>{model.name} / simulated holdout set</p></div><ChartNoAxesCombined size={16} class="faint" /></div>
-      <div class="performance-rows">
-        {#each [{ label: 'Overall accuracy', value: metrics.accuracy }, { label: 'Macro F1-score', value: metrics.f1 }, { label: 'Mean IoU', value: metrics.iou }] as metric}
-          <div class="performance-row"><div><span>{metric.label}</span><b>{pct(metric.value)}</b></div><div class="metric-track"><i style:width={pct(metric.value)}></i></div></div>
+      <div class="section-heading">
+        <div><h2>{t('overview.checklist')}</h2></div>
+      </div>
+      <ul class="checklist">
+        {#each checks as check (check.key)}
+          <li class:done={check.done}>
+            {#if check.done}<Check size={13} class="accent" />{:else}<CircleDashed size={13} />{/if}
+            <span>{t(check.key)}</span>
+            <em>{check.done ? t('overview.check.done') : t('overview.check.missing')}</em>
+          </li>
         {/each}
-      </div>
-      <button class="button-link status-link" onclick={() => go('arena')}>Compare models <ArrowRight size={14} /></button>
+      </ul>
     </section>
 
     <section class="surface section-box">
-      <div class="section-heading"><div><h2>Recent activity</h2><p>Local demo project history</p></div></div>
-      <div class="activity-list">
-        {#if newestReview}
-          <button onclick={() => { workspace.selectedSample = newestReview[0]; go('learning'); }}><Tags size={15} /><span><strong>{newestReview[0]} labeled</strong><small>{classes[newestReview[1].label].name} / {fmtDate(newestReview[1].date)}</small></span><ArrowRight size={13} /></button>
-        {/if}
-        <button onclick={() => go('learning')}><Tags size={15} /><span><strong>Reference reviews imported</strong><small>4 reviewed samples / 15 Apr</small></span><ArrowRight size={13} /></button>
-        <button onclick={() => { workspace.observation = latest.date; workspace.sensor = 'all'; go('map'); }}><CircleCheck size={15} /><span><strong>Classification snapshot ready</strong><small>Sentinel Fusion RF / 14 Apr</small></span><ArrowRight size={13} /></button>
-        <button onclick={() => go('temporal')}><CalendarDays size={15} /><span><strong>Optical observation added</strong><small>Sentinel-2 L2A / 14 Apr</small></span><ArrowRight size={13} /></button>
+      <div class="section-heading">
+        <div>
+          <h2>{t('overview.modelPerformance')}</h2>
+          <p>{metrics ? `#${metrics.iteration} · ${metrics.modelType} · ${metrics.resolution}` : ''}</p>
+        </div>
+        <Tags size={16} class="faint" />
       </div>
+      {#if metrics}
+        <div class="performance-rows">
+          <MetricBar label={t('overview.accuracy')} value={metrics.accuracy} display={percent(metrics.accuracy)} />
+          <MetricBar label={t('overview.f1')} value={metrics.f1Macro} display={percent(metrics.f1Macro)} />
+          <MetricBar
+            label={t('arena.iou')}
+            value={metrics.perClass.length
+              ? metrics.perClass.reduce((sum, row) => sum + (row.iou ?? 0), 0) / metrics.perClass.length
+              : null}
+            display={percent(
+              metrics.perClass.length
+                ? metrics.perClass.reduce((sum, row) => sum + (row.iou ?? 0), 0) / metrics.perClass.length
+                : null,
+            )}
+          />
+        </div>
+        {#if metrics.insufficient}
+          <p class="engine-note warn">{t('overview.insufficient')}</p>
+        {:else if metrics.evaluationStrategy === 'random'}
+          <p class="engine-note">{t('overview.randomCaveat')}</p>
+        {/if}
+        <button class="button-link status-link" onclick={() => go('arena')}
+          >{t('overview.compareModels')} <ArrowRight size={14} /></button
+        >
+      {:else}
+        <EmptyState title={t('overview.noModel')} hint={t('overview.noModelHint')} />
+      {/if}
     </section>
   </div>
 </div>
 
 <style>
-  .overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(275px, .5fr); gap: 15px; align-items: start; }
-  .study-preview { overflow: hidden; }
-  .preview-map { display: block; position: relative; height: clamp(235px, 28vw, 350px); overflow: hidden; }
-  .preview-map:focus-visible { outline-offset: -3px; }
-  .preview-annotation { position: absolute; bottom: 12px; left: 12px; display: inline-flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 5px; border: 1px solid #59776d; background: #102129ed; color: #e2f4ee; font-size: 11px; }
-  .preview-map:hover .preview-annotation { background: #203b42; border-color: var(--accent); }
-  .study-foot { padding: 10px 12px; display: flex; gap: 8px 16px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
-  .study-foot .mono { margin-right: auto; }
-  .status-body { padding-top: 5px; }
-  .ready-state { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); white-space: nowrap; }
+  .overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 0.52fr); gap: 15px; align-items: start; }
+  .engine-note { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--line); color: var(--faint); font-size: 10.5px; line-height: 1.6; }
+  .engine-note.warn { color: var(--warn); }
+  .dd-note { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; line-height: 1.45; }
+  .status-body { padding-top: 6px; }
   .status-link { margin-top: 11px; }
-  .chart-link { margin-top: 10px; }
+  .checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+  .checklist li { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 11.5px; }
+  .checklist li.done { color: var(--ink); }
+  .checklist em { margin-inline-start: auto; font: 9.5px var(--mono); font-style: normal; color: var(--faint); }
+  .checklist li.done em { color: var(--accent); }
   .performance-rows { display: grid; gap: 12px; }
-  .performance-row > div:first-child { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
-  .performance-row b { color: var(--accent); font: 12px var(--mono); }
-  .metric-track { height: 4px; border-radius: 4px; background: #293c50; overflow: hidden; }
-  .metric-track i { display: block; height: 100%; border-radius: 4px; background: #52b9a8; transition: width 180ms ease; }
-  .activity-list { display: grid; }
-  .activity-list button { display: flex; align-items: center; text-align: left; gap: 9px; padding: 9px 0; color: #91b5cb; width: 100%; }
-  .activity-list button + button { border-top: 1px solid var(--line); }
-  .activity-list button:hover { color: var(--accent); }
-  .activity-list span { flex: 1; min-width: 0; }
-  .activity-list strong { display: block; font-size: 11.5px; font-weight: 560; color: var(--ink); }
-  .activity-list small { display: block; font-size: 10.5px; color: var(--faint); margin-top: 3px; }
-  @media (max-width: 1040px) { .overview-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 1040px) {
+    .overview-grid { grid-template-columns: minmax(0, 1fr); }
+  }
 </style>
