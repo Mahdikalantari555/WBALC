@@ -28,6 +28,7 @@ from .raster_service import (
     pixel_features,
 )
 from .schema_service import SchemaConflict, compare_schemas
+from .taxonomy_service import binary_plan, taxonomy_snapshot
 from .training_service import TrainingError, save_checkpoint, train_model
 
 
@@ -78,6 +79,22 @@ async def run_training(
             parsed = parse_sample_id(sid)
             if parsed is not None and parsed[0] in datasets:
                 by_dataset.setdefault(parsed[0], []).append((parsed[1], parsed[2], target))
+
+    # Class semantics are snapshotted with the run: later project edits must not
+    # retroactively change what this model's classes meant.
+    if project.taxonomy:
+        binary_interpretation = project.taxonomy.get("binary_interpretation", "water_vs_non_water")
+        taxonomy = taxonomy_snapshot(project.taxonomy, binary_interpretation=binary_interpretation)
+    else:
+        # A generic/legacy project: record its class order, but do not claim water
+        # semantics it never opted into (no derived binary product).
+        binary_interpretation = None
+        taxonomy = {
+            "version": None,
+            "classes": list(project.classes),
+            "source": "legacy",
+            "binary_interpretation": None,
+        }
 
     # All contributing rasters must describe the same ordered bands. Band counts
     # that merely happen to match are not proof of semantic compatibility.
@@ -188,6 +205,7 @@ async def run_training(
             bands=bands,
             resolution=resolution,
             band_schema=band_schema,
+            taxonomy=taxonomy,
         )
     )
 
@@ -197,6 +215,11 @@ async def run_training(
         model_type=model_type,
         checkpoint_path=str(checkpoint),
         classes=project.classes,
+        # The classes this model actually learned, in project order. `run.classes`
+        # stays the full project list so pre-existing consumers keep working; a
+        # derived product must consult `trained_classes`, because a class the model
+        # never saw has no probabilities to recode.
+        trained_classes=[project.classes[i] for i in sorted(set(y_final))],
         n_samples=len(y_final),
         metrics=metrics,
         params={
@@ -211,6 +234,12 @@ async def run_training(
             "band_schema": band_schema,
             "band_schema_verified": bool(band_schema.get("declared")),
             "schema_override": bool(band_schema.get("override")),
+            "taxonomy": taxonomy,
+            "binary": (
+                binary_plan(list(project.classes), binary_interpretation)
+                if binary_interpretation
+                else None
+            ),
         },
     )
     session.add(run)

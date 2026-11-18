@@ -25,6 +25,10 @@ from ..schemas import (
 )
 from ..services.al_service import UNCERTAINTY_METHODS
 from ..services.inference_service import (
+    export_binary_cells_geotiff,
+    export_binary_geotiff,
+    export_binary_probability_cells_geotiff,
+    export_binary_probability_geotiff,
     class_colors,
     export_hard_cells_geotiff,
     export_hard_geotiff,
@@ -39,6 +43,7 @@ from ..services.inference_service import (
     validate_export_grid,
 )
 from ..services.mask_service import StudyAreaError, study_area_mask
+from ..services.taxonomy_service import TaxonomyError, binary_hard, binary_plan, binary_probability
 from ..services.pipeline import checkpoint_or_409, resolve_inference_contract
 from ..services.raster_service import (
     RasterError,
@@ -66,6 +71,9 @@ EXPORT_TYPES = {
     "prob": "probability",
     "uncertainty": "uncertainty",
     "som": "som",
+    # Derived from the three-class product, never a replacement for it.
+    "binary": "binary",
+    "binary_probability": "binary_probability",
 }
 DEFAULT_UNCERTAINTY_METHOD = "entropy"
 
@@ -202,6 +210,12 @@ async def _run_inference(
         unc = np.where(valid, unc, 0.0)
         study_area_applied = True
 
+    # Whether a derived binary artifact was actually written by this call. A
+    # non-persisting inference (map field / PNG / CSV) leaves the caller to look
+    # for an existing file instead of advertising one that does not exist.
+    binary_path = None
+    binary_probability_path = None
+
     contract_meta = {
         "band_schema_verified": contract["verified"],
         "band_schema_reason": contract["reason"],
@@ -217,6 +231,9 @@ async def _run_inference(
     meta["training_run_id"] = run.id
     meta["study_area_applied"] = study_area_applied
     meta["study_area_note"] = study_area_note
+    taxonomy = (checkpoint.get("taxonomy") or {})
+    meta["taxonomy_version"] = taxonomy.get("version")
+    meta["binary_interpretation"] = taxonomy.get("binary_interpretation")
     if not persist:
         return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution, contract_meta, {
             "applied": study_area_applied,
@@ -278,6 +295,59 @@ async def _run_inference(
     for write in writers:
         await anyio.to_thread.run_sync(write)
 
+    # Derived binary product. The interpretation is the one snapshotted with the
+    # run (never a later project edit), and a mapping that needs a class the model
+    # never learned is reported unavailable instead of being invented.
+    binary_path = None
+    binary_probability_path = None
+    binary_meta = None
+    interpretation = taxonomy.get("binary_interpretation")
+    if interpretation:
+        learned = list(run.trained_classes or run.classes)
+        try:
+            plan = binary_plan(learned, interpretation)
+        except TaxonomyError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if plan["available"]:
+            # Index positions are those of the run's full class list, because
+            # `hard`/`prob` are laid out over `run.classes`; the availability plan
+            # is what excludes absent classes.
+            binary, _ = binary_hard(hard, list(run.classes), interpretation)
+            water_prob, _ = binary_probability(prob, list(run.classes), interpretation)
+            binary_meta = {
+                **plan,
+                "training_run_id": run.id,
+                "taxonomy_version": taxonomy.get("version"),
+            }
+            binary_path = export_dir / f"binary_{tag}.tif"
+            binary_probability_path = export_dir / f"binary_probability_{tag}.tif"
+            if resolution == "pixel":
+                binary_writers = (
+                    lambda: export_binary_geotiff(
+                        binary_path, binary, dataset.crs, transform, binary_meta, valid=valid
+                    ),
+                    lambda: export_binary_probability_geotiff(
+                        binary_probability_path, water_prob, dataset.crs, transform,
+                        binary_meta, valid=valid,
+                    ),
+                )
+            else:
+                # Same cell geometry as the three-class patch products.
+                binary_writers = (
+                    lambda: export_binary_cells_geotiff(
+                        binary_path, binary, valid.reshape(grid.shape), grid,
+                        dataset.crs, transform, region_h, region_w, binary_meta,
+                    ),
+                    lambda: export_binary_probability_cells_geotiff(
+                        binary_probability_path, water_prob, valid.reshape(grid.shape), grid,
+                        dataset.crs, transform, region_h, region_w, binary_meta,
+                    ),
+                )
+            for write in binary_writers:
+                await anyio.to_thread.run_sync(write)
+        else:
+            binary_meta = {**plan, "training_run_id": run.id, "taxonomy_version": taxonomy.get("version")}
+
     def _validate_exports():
         validate_export_grid(
             dataset.path, (hard_path, prob_path, unc_path), (region.x0, region.y0, region_w, region_h)
@@ -294,7 +364,12 @@ async def _run_inference(
             Path(failed_path).unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"Export could not be verified: {exc}") from exc
 
-    for etype, path in (("hard", hard_path), ("probability", prob_path), ("uncertainty", unc_path)):
+    registered = [("hard", hard_path), ("probability", prob_path), ("uncertainty", unc_path)]
+    if binary_path is not None:
+        registered.append(("binary", binary_path))
+    if binary_probability_path is not None:
+        registered.append(("binary_probability", binary_probability_path))
+    for etype, path in registered:
         session.add(
             Export(
                 project_id=project.id,
@@ -340,6 +415,14 @@ async def predict(
         method,
         accept_unverified_schema=payload.accept_unverified_schema,
     )
+    # This call persists artifacts, so a link is advertised only for a file that
+    # `_run_inference` actually wrote (the derived product can be unavailable).
+    written = {
+        export.type
+        for export in (await session.execute(_exports_for(project.id, dataset.id))).scalars()
+        if Path(export.path).exists()
+    }
+    binary_written = "binary" in written
     shape = grid.shape
     valid_grid = valid.reshape(shape)
     unc_json = [
@@ -377,11 +460,10 @@ async def predict(
         schema_override=contract["schema_override"],
         study_area_applied=mask["applied"],
         study_area_note=mask["note"],
-        exports={
-            "hard": f"/projects/{project.id}/download/hard",
-            "probability": f"/projects/{project.id}/download/probability",
-            "uncertainty": f"/projects/{project.id}/download/uncertainty?method={method}",
-        },
+        # `persist=True` writes the derived binary product only when the run's
+        # mapping is available; never advertise a link to a file that is absent.
+        binary=_binary_summary(run, project, dataset.id, binary_available=binary_written),
+        exports=_prediction_exports(project.id, dataset.id, method, binary_written),
     )
 
 
@@ -390,7 +472,11 @@ async def predict_map(
     project_id: int,
     session: SessionDep,
     settings: SettingsDep,
-    layer: str = Query(default="hard", pattern="^(hard|uncertainty)$"),
+    layer: str = Query(
+        default="hard",
+        pattern="^(hard|uncertainty|binary)$",
+        description="hard = three-class source product; binary = derived water/non-water",
+    ),
     method: str = Query(default=DEFAULT_UNCERTAINTY_METHOD),
     dataset_id: int | None = Query(default=None),
     iteration: int | None = Query(default=None, ge=0),
@@ -419,15 +505,48 @@ async def predict_map(
         accept_unverified_schema=accept_unverified_schema,
     )
     latest = await latest_run(session, project.id)
+    # `_run_inference(persist=False)` does not write artifacts, so the binary
+    # links are only advertised when a real one exists on disk.
+    existing_exports = list((await session.execute(_exports_for(project.id, dataset.id))).scalars())
+    binary_available = _has_export(existing_exports, "binary")
     shape = grid.shape
     valid_grid = valid.reshape(shape)
 
+    binary_layer_plan = None
+    layer_classes = run.classes
     if layer == "hard":
         values: list[list[int | float | None]] = [
             [None if not valid_grid[r, c] else int(hard[r, c]) for c in range(shape[1])]
             for r in range(shape[0])
         ]
         vmin, vmax = 0.0, float(max(0, len(run.classes) - 1))
+        layer_classes = run.classes
+    elif layer == "binary":
+        # Derived from the run's *snapshotted* interpretation, never from the
+        # project's current setting; an unavailable mapping is a clear 409.
+        interpretation = ((run.params or {}).get("taxonomy") or {}).get("binary_interpretation")
+        if not interpretation:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This model has no recorded binary interpretation (it predates the "
+                    "water taxonomy); retrain to produce a derived binary product."
+                ),
+            )
+        try:
+            binary_values, plan = binary_hard(hard, list(run.classes), interpretation)
+        except TaxonomyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        values = [
+            [
+                None if not valid_grid[r, c] else int(binary_values[r, c])
+                for c in range(shape[1])
+            ]
+            for r in range(shape[0])
+        ]
+        vmin, vmax = 0.0, 1.0
+        layer_classes = ["non_water", "water"]
+        binary_layer_plan = plan
     else:
         clean = np.where(np.isfinite(unc), unc, np.nan)
         values = [
@@ -445,7 +564,7 @@ async def predict_map(
         dataset_id=dataset.id,
         model_iteration=run.iteration,
         training_run_id=run.id,
-        classes=run.classes,
+        classes=layer_classes,
         resolution=resolution,
         grid=MapGridOut(
             rows=shape[0],
@@ -463,13 +582,8 @@ async def predict_map(
         band_schema_reason=contract["band_schema_reason"],
         study_area_applied=mask["applied"],
         study_area_note=mask["note"],
-        exports={
-            "hard": f"/projects/{project.id}/download/hard?dataset_id={dataset.id}",
-            "probability": f"/projects/{project.id}/download/probability?dataset_id={dataset.id}",
-            "uncertainty": (
-                f"/projects/{project.id}/download/uncertainty?dataset_id={dataset.id}&method={method}"
-            ),
-        },
+        binary=_binary_summary(run, project, dataset.id, binary_available=binary_available),
+        exports=_prediction_exports(project.id, dataset.id, method, binary_available),
     )
 
 
@@ -479,6 +593,72 @@ def _exports_for(project_id: int, dataset_id: int | None = None, method: str | N
     if dataset_id is not None:
         stmt = stmt.where(Export.dataset_id == dataset_id)
     return stmt
+
+
+def _has_export(exports, etype: str) -> bool:
+    """Whether a usable artifact of this type already exists for the selection."""
+    for export in exports:
+        if export.type == etype and Path(export.path).exists():
+            return True
+    return False
+
+
+def _prediction_exports(
+    project_id: int, dataset_id: int, method: str, binary: bool | None
+) -> dict[str, str]:
+    urls = {
+        "hard": f"/projects/{project_id}/download/hard?dataset_id={dataset_id}",
+        "probability": f"/projects/{project_id}/download/probability?dataset_id={dataset_id}",
+        "uncertainty": (
+            f"/projects/{project_id}/download/uncertainty?dataset_id={dataset_id}&method={method}"
+        ),
+    }
+    # The derived product is only advertised when an artifact really exists: a
+    # link to a product that would 409 is worse than no link.
+    if binary:
+        urls["binary"] = f"/projects/{project_id}/download/binary?dataset_id={dataset_id}"
+        urls["binary_probability"] = (
+            f"/projects/{project_id}/download/binary_probability?dataset_id={dataset_id}"
+        )
+    return urls
+
+
+def _binary_summary(run, project, dataset_id: int, *, binary_available: bool):
+    """Describe the derived binary product for this run — or why it is absent."""
+    from ..schemas import BinarySummary
+
+    taxonomy = (run.params or {}).get("taxonomy") or {}
+    interpretation = taxonomy.get("binary_interpretation")
+    if not interpretation:
+        return None
+    # A class the model never learned has no probabilities to recode, so the plan
+    # is computed over the learned subset (older runs fall back to the full list).
+    learned = list(run.trained_classes or run.classes)
+    try:
+        plan = binary_plan(learned, interpretation)
+    except TaxonomyError:
+        return None
+    exports = (
+        {
+            "binary": f"/projects/{project.id}/download/binary?dataset_id={dataset_id}",
+            "binary_probability": (
+                f"/projects/{project.id}/download/binary_probability?dataset_id={dataset_id}"
+            ),
+        }
+        if binary_available and plan["available"]
+        else {}
+    )
+    return BinarySummary(
+        interpretation=plan["interpretation"],
+        version=plan["version"],
+        available=plan["available"],
+        mapping=plan["mapping"],
+        source_classes=plan["source_classes"],
+        missing_classes=plan["missing_classes"],
+        reason=plan.get("reason"),
+        taxonomy_version=taxonomy.get("version"),
+        exports=exports,
+    )
 
 
 async def _latest_export(session, project_id, etype, dataset_id=None, method=None):
@@ -509,8 +689,9 @@ async def download(
     """Download the latest GeoTIFF export of the given type.
 
     Types: `hard` (class indices + colormap), `probability` (one band per class),
-    `uncertainty` (0..1 float, nodata for invalid patches). If no export exists
-    yet but a model is trained, inference runs automatically.
+    `uncertainty` (0..1 float, nodata for invalid patches), plus the *derived*
+    `binary` (1 = water) and `binary_probability` (P(water)) products. If no
+    export exists yet but a model is trained, inference runs automatically.
     """
     project = await get_project(session, project_id)
     if export_type not in EXPORT_TYPES:
@@ -518,7 +699,7 @@ async def download(
             status_code=404,
             detail=(
                 f"Unknown export type '{export_type}'; use hard, probability, "
-                "uncertainty or som"
+                "uncertainty, binary, binary_probability or som"
             ),
         )
     etype = EXPORT_TYPES[export_type]
@@ -601,6 +782,14 @@ async def download_png(
         )
     if export_type == "uncertainty":
         _check_method(method)
+    if export_type in ("binary", "binary_probability"):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"PNG export supports hard and uncertainty; '{export_type}' is a "
+                "GeoTIFF categorical product (download/{export_type})"
+            ),
+        )
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
     (

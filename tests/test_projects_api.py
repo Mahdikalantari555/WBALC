@@ -7,7 +7,13 @@ class TestProjects:
     def test_create(self, client):
         resp = client.post(
             "/projects",
-            json={"name": "Coastal", "classes": ["water", "land"], "description": "d", "status": "active"},
+            json={
+                "name": "Coastal",
+                "classes": ["water", "land"],
+                "description": "d",
+                "status": "active",
+                "generic_classes": True,
+            },
         )
         assert resp.status_code == 201
         body = resp.json()
@@ -19,12 +25,13 @@ class TestProjects:
         assert "created_at" in body
 
     def test_create_invalid(self, client):
-        assert client.post("/projects", json={"name": "", "classes": ["a", "b"]}).status_code == 422
-        assert client.post("/projects", json={"name": "x", "classes": ["a"]}).status_code == 422
-        assert client.post("/projects", json={"name": "x", "classes": ["a", "a"]}).status_code == 422
+        generic = {"generic_classes": True}
+        assert client.post("/projects", json={"name": "", "classes": ["a", "b"], **generic}).status_code == 422
+        assert client.post("/projects", json={"name": "x", "classes": ["a"], **generic}).status_code == 422
+        assert client.post("/projects", json={"name": "x", "classes": ["a", "a"], **generic}).status_code == 422
 
     def test_list(self, client, project):
-        client.post("/projects", json={"name": "Second", "classes": ["a", "b"]})
+        client.post("/projects", json={"name": "Second", "classes": ["a", "b"], "generic_classes": True})
         resp = client.get("/projects")
         assert resp.status_code == 200
         assert len(resp.json()) == 2

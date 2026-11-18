@@ -7,8 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .v001_scene_foundation import upgrade as upgrade_v1
 from .v002_dataset_band_schema import upgrade as upgrade_v2
+from .v003_project_taxonomy import upgrade as upgrade_v3
+from .v004_label_submitted_class import upgrade as upgrade_v4
+from .v005_run_trained_classes import upgrade as upgrade_v5
 
-MIGRATIONS = [(1, upgrade_v1), (2, upgrade_v2)]
+MIGRATIONS = [
+    (1, upgrade_v1),
+    (2, upgrade_v2),
+    (3, upgrade_v3),
+    (4, upgrade_v4),
+    (5, upgrade_v5),
+]
 
 
 async def run_migrations(connection: AsyncConnection) -> None:

@@ -10,6 +10,7 @@ from ..schemas import LabelBatchCreate, LabelCreate, LabelOut
 from ..services.label_service import derive_sample_id, latest_labels
 from ..services.pipeline import run_training
 from ..services.schema_service import SchemaConflict
+from ..services.taxonomy_service import alias_suggestions, resolve_label_class
 from ..services.raster_service import make_grid, map_to_pixel
 from ..services.training_service import TrainingError
 from .deps import (
@@ -26,12 +27,36 @@ from ..schemas import TrainResponse
 router = APIRouter(prefix="/projects/{project_id}", tags=["labels"])
 
 
-async def _store_label(session, settings, project, payload: LabelCreate) -> Label:
-    if payload.class_name not in project.classes:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown class '{payload.class_name}'; project classes: {project.classes}",
+def _resolve_class_name(project, submitted: str) -> str:
+    """Map submitted label text to the project's canonical class name.
+
+    The submitted text is never rewritten in place: the caller stores the
+    resolved canonical name on the label while the original request stays in the
+    client's history. An alias only exists when the project configured it.
+    """
+    if submitted in project.classes:
+        return submitted
+    if project.taxonomy:
+        canonical = resolve_label_class(submitted, project.taxonomy)
+        if canonical and canonical in project.classes:
+            return canonical
+        hints = [c for c in alias_suggestions(submitted, project.taxonomy) if c in project.classes]
+        detail = (
+            f"Label '{submitted}' has no configured mapping in this project's taxonomy "
+            f"(version {project.taxonomy.get('version')}). Configure it as an alias of "
+            f"one of {project.classes}, or submit one of those names directly."
         )
+        if hints:
+            detail += f" Closest configured classes: {', '.join(hints)}."
+        raise HTTPException(status_code=422, detail=detail)
+    raise HTTPException(
+        status_code=422,
+        detail=f"Unknown class '{submitted}'; project classes: {project.classes}",
+    )
+
+
+async def _store_label(session, settings, project, payload: LabelCreate) -> Label:
+    class_name = _resolve_class_name(project, payload.class_name)
 
     if payload.dataset_id is not None:
         dataset = await get_dataset(session, project.id, payload.dataset_id)
@@ -103,7 +128,11 @@ async def _store_label(session, settings, project, payload: LabelCreate) -> Labe
         sample_type=stype,
         geometry=effective_payload.geometry.model_dump(),
         coordinate_space=payload.coordinate_space,
-        class_name=payload.class_name,
+        class_name=class_name,
+        submitted_class_name=(
+            payload.submitted_class_name
+            or (payload.class_name if payload.class_name != class_name else None)
+        ),
         iteration=payload.iteration,
         version=version,
     )

@@ -239,7 +239,7 @@ class TestSomApi:
     def test_som_errors(self, client, project, dataset):
         assert client.get("/projects/9999/som").status_code == 404
         empty_proj = client.post(
-            "/projects", json={"name": "Empty", "classes": ["a", "b"]}
+            "/projects", json={"name": "Empty", "classes": ["a", "b"], "generic_classes": True}
         ).json()
         assert client.get(f"/projects/{empty_proj['id']}/som").status_code == 409
         bad_cell = client.post(

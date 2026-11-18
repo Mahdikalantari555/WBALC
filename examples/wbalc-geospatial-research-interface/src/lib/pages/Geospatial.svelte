@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Download, Focus, Layers, MapPin, RotateCw, Scan, X } from '@lucide/svelte';
+  import { Download, Droplets, Focus, Layers, MapPin, RotateCw, Scan, X } from '@lucide/svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import InteractiveMap from '../components/InteractiveMap.svelte';
   import PageHeading from '../components/PageHeading.svelte';
@@ -15,6 +15,9 @@
   const dataset = $derived(workspace.dataset);
   const hard = $derived(workspace.field.hard as MapFieldView | null);
   const uncertainty = $derived(workspace.field.uncertainty as MapFieldView | null);
+  const binaryField = $derived(workspace.field.binary as MapFieldView | null);
+  /** Derived water product is only meaningful when the run recorded one. */
+  const binary = $derived(hard?.binary ?? uncertainty?.binary ?? null);
   const selected = $derived(workspace.map.selected);
   /** Provenance of the field currently painted, or null before a first load. */
   const provenance = $derived(hard ?? uncertainty);
@@ -23,6 +26,11 @@
   const layers = $derived([
     { id: 'imagery' as const, title: t('map.layer.imagery'), note: t('map.layer.imageryNote'), icon: Scan },
     { id: 'classification' as const, title: t('map.layer.classification'), note: t('map.layer.classificationNote'), icon: Layers },
+    // Only offered when the run actually recorded a water interpretation: a toggle
+    // that always fails is worse than no toggle.
+    ...(binary
+      ? [{ id: 'binary' as const, title: t('map.layer.binary'), note: t('map.layer.binaryNote'), icon: Droplets }]
+      : []),
     { id: 'uncertainty' as const, title: t('map.layer.uncertainty'), note: t('map.layer.uncertaintyNote'), icon: Focus },
     { id: 'samples' as const, title: t('map.layer.samples'), note: t('map.layer.samplesNote'), icon: MapPin },
   ]);
@@ -59,7 +67,10 @@
   function toggle(layer: MapLayer) {
     const next = !workspace.map.layers[layer];
     workspace.map.layers[layer] = next;
-    if ((layer === 'classification' || layer === 'uncertainty') && workspace.latestRun) {
+    if (
+      (layer === 'classification' || layer === 'uncertainty' || layer === 'binary') &&
+      workspace.latestRun
+    ) {
       void workspace.loadMapField();
     }
     if (!next && layer === 'samples' && selected?.kind === 'sample') workspace.map.selected = null;
@@ -71,8 +82,15 @@
 
   function exportView() {
     if (!dataset) return;
+    // Export what the operator is looking at: the derived binary product is its
+    // own file, never a reinterpretation of the three-class one.
+    const type = workspace.map.layers.uncertainty
+      ? 'uncertainty'
+      : workspace.map.layers.binary && binary?.available
+        ? 'binary'
+        : 'hard';
     const url = api.exportUrl(workspace.project!.id, {
-      type: workspace.map.layers.uncertainty ? 'uncertainty' : 'hard',
+      type,
       datasetId: dataset.id,
       method: workspace.map.method,
     });
@@ -114,7 +132,7 @@
 {:else}
   <div class="map-workspace">
     <div class="stack">
-      <InteractiveMap {dataset} {hard} {uncertainty} labels={workspace.labels} onselect={select} />
+      <InteractiveMap {dataset} {hard} {uncertainty} {binaryField} labels={workspace.labels} onselect={select} />
 
       {#if workspace.fieldError}
         <div class="inline-error" role="alert">
@@ -255,6 +273,54 @@
           <EmptyState title={t('map.noSelection')} hint={t('map.noSelectionHint')} />
         {/if}
       </section>
+
+      {#if workspace.project}
+        <section class="surface section-box" aria-labelledby="taxonomy-heading">
+          <div class="section-heading">
+            <div>
+              <h2 id="taxonomy-heading">{t('map.taxonomy.title')}</h2>
+              <p>
+                {workspace.project.taxonomy?.version
+                  ? `${t('map.taxonomy.internal')} · ${workspace.project.taxonomy.version}`
+                  : t('map.taxonomy.generic')}
+              </p>
+            </div>
+          </div>
+          <dl class="kv-list">
+            <div>
+              <dt>{t('map.taxonomy.internal')}</dt>
+              <dd>{(workspace.project.taxonomy?.classes ?? workspace.project.classes).join(', ')}</dd>
+            </div>
+            {#if binary}
+              <div>
+                <dt>{t('map.layer.binary')}</dt>
+                <dd>
+                  {binary.interpretation === 'open_water_vs_other'
+                    ? t('map.binary.interpretation.openWaterVsOther')
+                    : t('map.binary.interpretation.waterVsNonWater')}
+                </dd>
+              </div>
+              <div>
+                <dt>{t('map.binary.mapping')}</dt>
+                <dd>
+                  {#if binary.available}
+                    {Object.entries(binary.mapping)
+                      .map(([name, role]) => `${name} → ${role === 'water' ? t('map.binary.water') : t('map.binary.nonWater')}`)
+                      .join(' · ')}
+                  {:else}
+                    {t('map.binary.unavailable')}
+                  {/if}
+                </dd>
+              </div>
+            {/if}
+          </dl>
+          {#if binary && !binary.available}
+            <p class="mask-note">{binary.reason}</p>
+          {:else if binary}
+            <p class="mask-note">{t('map.binary.note')}</p>
+          {/if}
+        </section>
+      {/if}
 
       {#if provenance}
         <section class="surface section-box" aria-labelledby="provenance-heading">

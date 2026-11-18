@@ -130,9 +130,34 @@ export interface RsalProject {
   classification_config: {
     internal_classes: string[];
     binary_output_interpretation: 'water_vs_non_water' | 'open_water_vs_other';
+    label_aliases?: Record<string, string[]>;
   };
+  /** Versioned water taxonomy snapshot; null for a generic/legacy project. */
+  taxonomy?: RsalTaxonomy | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface RsalBinarySummary {
+  interpretation: 'water_vs_non_water' | 'open_water_vs_other';
+  version: string;
+  available: boolean;
+  mapping: Record<string, string>;
+  source_classes: string[];
+  missing_classes: string[];
+  reason: string | null;
+  taxonomy_version: string | null;
+  exports: Record<string, string>;
+}
+
+export interface RsalTaxonomy {
+  version: string;
+  classes: string[];
+  display_names: Record<string, string>;
+  aliases: Record<string, string[]>;
+  crosswalk: Record<string, string>;
+  binary_interpretation: 'water_vs_non_water' | 'open_water_vs_other';
+  source: string;
 }
 
 export interface RsalDataset {
@@ -290,7 +315,7 @@ export interface RsalTrainResponse {
 }
 
 export interface RsalMapField {
-  layer: 'hard' | 'uncertainty';
+  layer: 'hard' | 'uncertainty' | 'binary';
   method: string | null;
   project_id: number;
   dataset_id: number;
@@ -298,6 +323,7 @@ export interface RsalMapField {
   training_run_id: number;
   classes: string[];
   resolution: 'pixel' | 'patch';
+  binary?: RsalBinarySummary | null;
   grid: {
     rows: number;
     cols: number;

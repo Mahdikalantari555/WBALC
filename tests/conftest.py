@@ -60,9 +60,18 @@ def geotiff_bytes() -> bytes:
 
 @pytest.fixture()
 def project(client) -> dict:
+    # A generic two-class project: it opts out of the WBALC water taxonomy on
+    # purpose, so these legacy-path tests keep their own class list. Water-taxonomy
+    # projects are created explicitly in the Phase 1 tests.
     resp = client.post(
         "/projects",
-        json={"name": "Demo", "classes": ["water", "vegetation"], "description": "test", "status": "active"},
+        json={
+            "name": "Demo",
+            "classes": ["water", "vegetation"],
+            "description": "test",
+            "status": "active",
+            "generic_classes": True,
+        },
     )
     assert resp.status_code == 201, resp.text
     return resp.json()

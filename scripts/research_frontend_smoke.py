@@ -151,6 +151,13 @@ def main() -> None:
             project["classificationConfig"]["internalClasses"] == ["open_water", "emergent_vegetation", "land"],
             str(project["classes"]),
         )
+        check(
+            "water taxonomy snapshot recorded",
+            project["taxonomy"] is not None
+            and project["taxonomy"]["version"] == "wbalc-water-taxonomy-v1"
+            and project["taxonomy"]["classes"] == ["open_water", "emergent_vegetation", "land"],
+            str(project["taxonomy"] and project["taxonomy"].get("version")),
+        )
 
         # -------------------------------------------------------------- upload
         # 256x256 -> an 8x8 patch grid, so a 20-sample diversity batch is real.
@@ -356,6 +363,44 @@ def main() -> None:
             r.status_code == 200 and r.json()["bandSchemaVerified"] is False,
             f"{r.status_code} body={r.text[:120]}",
         )
+
+        # -------------------------------------- water taxonomy + binary product
+        r = direct.get(f"/projects/{pid}/taxonomy")
+        described = r.json()
+        check(
+            "taxonomy endpoint describes the binary plan",
+            r.status_code == 200
+            and described["binary"]["interpretation"] == "water_vs_non_water"
+            and described["binary"]["mapping"]["emergent_vegetation"] == "water",
+            str(described.get("binary", {}).get("mapping")),
+        )
+
+        r = client.get(f"/api/projects/{pid}/map-field?layer=binary&dataset={did}")
+        check(
+            "derived binary map layer",
+            r.status_code == 200 and r.json()["classes"] == ["non_water", "water"],
+            f"{r.status_code} {r.text[:80]}",
+        )
+        binary_field = r.json()
+        check(
+            "binary layer reports its mapping and availability",
+            binary_field["binary"]["available"] is True
+            and set(binary_field["binary"]["mapping"].values()) <= {"water", "non_water"},
+        )
+        r = client.get(f"/api/projects/{pid}/exports?type=binary&dataset={did}")
+        check(
+            "derived binary GeoTIFF proxied",
+            r.status_code == 200 and r.headers["content-type"].startswith("image/tiff"),
+            str(r.status_code),
+        )
+        with rasterio.open(io.BytesIO(r.content)) as exported:
+            check(
+                "binary export is a categorical source-grid product",
+                exported.width == 256
+                and exported.height == 256
+                and exported.tags().get("derived") == "true"
+                and exported.tags().get("interpretation") == "water_vs_non_water",
+            )
 
         # ------------------------------------------------------------ exports
         r = client.get(f"/api/projects/{pid}/exports?type=hard&dataset={did}")

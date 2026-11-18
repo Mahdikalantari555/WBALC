@@ -7,6 +7,7 @@
  */
 import { assessGeoreferencing, datasetBounds, normalizeCrs, toWgs84 } from '$lib/geo';
 import type {
+  BinaryView,
   ClassMetric,
   DatasetView,
   LabelView,
@@ -19,6 +20,7 @@ import type {
   SceneView,
 } from '$lib/types';
 import type {
+  RsalBinarySummary,
   RsalDataset,
   RsalLabel,
   RsalMapField,
@@ -40,7 +42,24 @@ export function toProject(project: RsalProject): ProjectView {
       internalClasses: project.classification_config?.internal_classes ?? project.classes,
       binaryOutputInterpretation:
         project.classification_config?.binary_output_interpretation ?? 'water_vs_non_water',
+      labelAliases: project.classification_config?.label_aliases ?? {},
     },
+    taxonomy: project.taxonomy
+      ? {
+          version: project.taxonomy.version ?? null,
+          // A snapshot written by this engine says where it came from; anything
+          // else is reported as a project-configured list, never as a default.
+          source:
+            project.taxonomy.source === 'default'
+              ? 'default'
+              : project.taxonomy.source === 'project'
+                ? 'project'
+                : 'legacy',
+          classes: project.taxonomy.classes ?? project.classes,
+          displayNames: project.taxonomy.display_names ?? {},
+          aliases: project.taxonomy.aliases ?? {},
+        }
+      : null,
     studyAreaGeometry: project.study_area_geometry ?? null,
     studyAreaCrs: project.study_area_crs ?? null,
     createdAt: project.created_at,
@@ -261,6 +280,23 @@ export function toQueryBatch(response: RsalQueryResponse): QueryBatchView {
   };
 }
 
+/** Shape the derived-binary summary, or null when the run recorded none. */
+export function toBinary(
+  binary: RsalBinarySummary | null | undefined,
+): BinaryView | null {
+  if (!binary) return null;
+  return {
+    interpretation: binary.interpretation,
+    version: binary.version,
+    available: Boolean(binary.available),
+    mapping: binary.mapping ?? {},
+    sourceClasses: binary.source_classes ?? [],
+    missingClasses: binary.missing_classes ?? [],
+    reason: binary.reason ?? null,
+    taxonomyVersion: binary.taxonomy_version ?? null,
+  };
+}
+
 export function toMapField(field: RsalMapField): MapFieldView {
   return {
     layer: field.layer,
@@ -282,6 +318,7 @@ export function toMapField(field: RsalMapField): MapFieldView {
     min: field.min,
     max: field.max,
     stale: field.stale,
+    binary: toBinary(field.binary),
     // An older engine omits these; "unverified" is the honest default because
     // the adapter cannot claim a schema match the engine never reported.
     bandSchemaVerified: Boolean(field.band_schema_verified),

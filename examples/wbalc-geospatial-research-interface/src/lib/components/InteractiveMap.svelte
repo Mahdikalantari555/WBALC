@@ -1,8 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { Crosshair, Layers, Map as MapIcon, Maximize, Minimize, Minus, Plus, RotateCcw } from '@lucide/svelte';
+  import { Crosshair, Droplets, Layers, Map as MapIcon, Maximize, Minimize, Minus, Plus, RotateCcw } from '@lucide/svelte';
   import { applyAffine, assessGeoreferencing, datasetBounds as wgsBounds, cellWindow, toWgs84 } from '$lib/geo';
-  import { renderClassOverlay, renderUncertaintyOverlay, classColors } from '$lib/palette';
+  import { renderClassOverlay, renderUncertaintyOverlay, classColors, BINARY_COLORS } from '$lib/palette';
   import { renderRaster } from '$lib/raster';
   import { getWorkspace, type Selection } from '$lib/state.svelte';
   import { useT } from '$lib/t.svelte';
@@ -12,12 +12,14 @@
     dataset,
     hard,
     uncertainty,
+    binaryField,
     labels,
     onselect,
   }: {
     dataset: DatasetView;
     hard: MapFieldView | null;
     uncertainty: MapFieldView | null;
+    binaryField: MapFieldView | null;
     labels: LabelView[];
     onselect: (feature: Selection) => void;
   } = $props();
@@ -419,7 +421,14 @@
     {/if}
 
     <div class="map-legend">
-      {#if workspace.map.layers.classification && hard}
+      {#if workspace.map.layers.binary && binaryField}
+        <span class="section-label"><Droplets size={12} /> {t('map.layer.binary')}</span>
+        <div class="chip-row">
+          <span class="chip" style:--chip-color={BINARY_COLORS.water}><i></i>{t('map.binary.water')}</span>
+          <span class="chip" style:--chip-color={BINARY_COLORS.non_water}><i></i>{t('map.binary.nonWater')}</span>
+        </div>
+        <p class="legend-note">{t('map.binary.note')}</p>
+      {:else if workspace.map.layers.classification && hard}
         <span class="section-label"><Layers size={12} /> {t('map.layer.classification')}</span>
         <div class="chip-row">
           {#each hard.classes as name}

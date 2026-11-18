@@ -45,6 +45,9 @@ def _validate_study_geometry(value: dict[str, Any] | None) -> dict[str, Any] | N
 class ClassificationConfig(BaseModel):
     internal_classes: list[str] = Field(default_factory=lambda: WBALC_INTERNAL_CLASSES.copy())
     binary_output_interpretation: BinaryInterpretation = "water_vs_non_water"
+    # Explicit alias → canonical class mapping. `reed` is NOT a default: a project
+    # has to say so, because emergent vegetation is not "reeds".
+    label_aliases: dict[str, list[str]] = Field(default_factory=dict)
 
     @field_validator("internal_classes")
     @classmethod
@@ -52,6 +55,16 @@ class ClassificationConfig(BaseModel):
         if value != WBALC_INTERNAL_CLASSES:
             raise ValueError("WBALC internal classes must be open_water, emergent_vegetation, land")
         return value
+
+    @field_validator("label_aliases")
+    @classmethod
+    def validate_aliases(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        from .services.taxonomy_service import TaxonomyError, normalise_aliases
+
+        try:
+            return normalise_aliases(value)
+        except TaxonomyError as exc:  # surface as a 422, not a 500
+            raise ValueError(str(exc)) from exc
 
 
 class ProjectCreate(BaseModel):
@@ -62,6 +75,10 @@ class ProjectCreate(BaseModel):
     study_area_geometry: dict[str, Any] | None = None
     study_area_crs: str | None = Field(default=None, max_length=255)
     classification_config: ClassificationConfig = Field(default_factory=ClassificationConfig)
+    # Opt out of the WBALC water taxonomy on purpose. Without this flag a project
+    # whose classes are not the water topology is refused, rather than silently
+    # given water semantics it does not have.
+    generic_classes: bool = False
 
     @field_validator("study_area_geometry")
     @classmethod
@@ -72,6 +89,22 @@ class ProjectCreate(BaseModel):
     def geometry_requires_crs(self):
         if self.study_area_geometry is not None and not self.study_area_crs:
             raise ValueError("study_area_crs is required when study_area_geometry is provided")
+        return self
+
+    @model_validator(mode="after")
+    def classes_match_taxonomy(self):
+        """`classes` and the taxonomy must not contradict each other."""
+        if self.classes is None:
+            return self
+        if self.generic_classes:
+            return self
+        if self.classes != WBALC_INTERNAL_CLASSES:
+            raise ValueError(
+                "classes must be the WBALC water taxonomy "
+                f"({', '.join(WBALC_INTERNAL_CLASSES)}) in that order; "
+                "pass generic_classes=true to create a project with its own class list "
+                "and no water crosswalk"
+            )
         return self
 
     @field_validator("classes")
@@ -95,6 +128,9 @@ class ProjectUpdate(BaseModel):
     study_area_geometry: dict[str, Any] | None = None
     study_area_crs: str | None = Field(default=None, max_length=255)
     classification_config: ClassificationConfig | None = None
+    # Switching an existing project into (or out of) the water taxonomy is an
+    # explicit migration decision, never implicit.
+    generic_classes: bool | None = None
 
     @field_validator("study_area_geometry")
     @classmethod
@@ -115,6 +151,17 @@ class ProjectUpdate(BaseModel):
         return ProjectCreate.classes_unique_nonempty(v)
 
 
+class TaxonomyOut(BaseModel):
+    """Read-only description of a project's class semantics."""
+
+    taxonomy_version: str | None = None
+    source: str  # "default" | "project" | "legacy"
+    classes: list[str]
+    display_names: dict[str, str]
+    aliases: dict[str, list[str]]
+    binary: dict[str, Any]
+
+
 class ProjectOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -126,6 +173,10 @@ class ProjectOut(BaseModel):
     study_area_geometry: dict[str, Any] | None = None
     study_area_crs: str | None = None
     classification_config: ClassificationConfig
+    # Stored taxonomy snapshot (version, class order, crosswalk, interpretation).
+    # Null for a generic/legacy project that never opted into the water taxonomy.
+    # `GET /projects/{id}/taxonomy` derives the richer, computed description.
+    taxonomy: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -254,6 +305,10 @@ class LabelCreate(BaseModel):
     sample_id: str | None = None
     geometry: Geometry
     class_name: str = Field(min_length=1)
+    # Original text as the annotator submitted it. When it is an alias it is
+    # recorded here and kept next to the resolved canonical class, so the
+    # mapping stays auditable instead of being rewritten away.
+    submitted_class_name: str | None = None
     iteration: int = Field(default=0, ge=0)
     dataset_id: int | None = None
     coordinate_space: Literal["pixel", "map"] = "pixel"
@@ -275,6 +330,7 @@ class LabelOut(BaseModel):
     dataset_id: int | None
     sample_id: str
     sample_type: str
+    submitted_class_name: str | None = None
     geometry: dict
     coordinate_space: str
     class_name: str
@@ -421,6 +477,9 @@ class PredictResponse(BaseModel):
     schema_override: bool = False
     study_area_applied: bool = False
     study_area_note: str | None = None
+    # What a derived binary product would (or did) mean, and whether it is
+    # available at all. The three-class maps above remain the source product.
+    binary: BinarySummary | None = None
     exports: dict[str, str]  # type -> download URL
 
 
@@ -432,6 +491,21 @@ class MapGridOut(BaseModel):
     patch_size: int
     stride: int
     region: Region
+
+
+class BinarySummary(BaseModel):
+    """Derived binary water interpretation available from a three-class product."""
+
+    interpretation: str
+    version: str
+    available: bool
+    # class id -> "water" | "non_water", for the classes the model actually has
+    mapping: dict[str, str] = Field(default_factory=dict)
+    source_classes: list[str] = Field(default_factory=list)
+    missing_classes: list[str] = Field(default_factory=list)
+    reason: str | None = None
+    taxonomy_version: str | None = None
+    exports: dict[str, str] = Field(default_factory=dict)
 
 
 class MapFieldOut(BaseModel):
@@ -457,6 +531,8 @@ class MapFieldOut(BaseModel):
     band_schema_reason: str | None = None
     study_area_applied: bool = False
     study_area_note: str | None = None
+    # Derived product plan; None when the project has no water taxonomy.
+    binary: BinarySummary | None = None
     exports: dict[str, str]
 
 

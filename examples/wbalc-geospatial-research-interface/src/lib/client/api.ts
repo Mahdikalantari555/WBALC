@@ -62,7 +62,7 @@ export const api = {
   mapField: (
     id: string,
     options: {
-      layer: 'hard' | 'uncertainty';
+      layer: 'hard' | 'uncertainty' | 'binary';
       method: string;
       datasetId: string;
       /** Records an explicit "I accept an unverified band schema" override. */
@@ -146,7 +146,7 @@ export const api = {
   exportUrl: (
     id: string,
     options: {
-      type: 'hard' | 'probability' | 'uncertainty';
+      type: 'hard' | 'probability' | 'uncertainty' | 'binary' | 'binary_probability';
       datasetId?: string;
       method?: string;
       acceptUnverifiedSchema?: boolean;

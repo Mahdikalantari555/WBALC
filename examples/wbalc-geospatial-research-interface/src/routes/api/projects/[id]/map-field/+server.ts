@@ -4,7 +4,7 @@ import { fail, ok } from '$lib/server/http';
 import { rsalGet, type RsalMapField } from '$lib/server/rsal';
 
 /**
- * GET /api/projects/{id}/map-field?layer=hard|uncertainty&method=…&dataset=…&accept_unverified_schema=true
+ * GET /api/projects/{id}/map-field?layer=hard|binary|uncertainty&method=…&dataset=…&accept_unverified_schema=true
  *
  * One grid-aligned field for the map. Uses `/predict/map`, which returns values,
  * validity and grid geometry but never the full probability tensor — the map
@@ -17,7 +17,11 @@ import { rsalGet, type RsalMapField } from '$lib/server/rsal';
  */
 export const GET: RequestHandler = async ({ params, url }) => {
   try {
-    const layer = url.searchParams.get('layer') === 'uncertainty' ? 'uncertainty' : 'hard';
+    const requested = url.searchParams.get('layer');
+    // `binary` is the derived water product; anything else falls back to the
+    // three-class source layer rather than silently returning a wrong product.
+    const layer =
+      requested === 'uncertainty' ? 'uncertainty' : requested === 'binary' ? 'binary' : 'hard';
     const method = url.searchParams.get('method') ?? 'entropy';
     const dataset = url.searchParams.get('dataset');
     const query = new URLSearchParams({ layer, method });

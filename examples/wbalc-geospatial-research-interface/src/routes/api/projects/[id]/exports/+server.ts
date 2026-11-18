@@ -2,7 +2,15 @@ import type { RequestHandler } from './$types';
 import { fail } from '$lib/server/http';
 import { ApiError, rsalFetch } from '$lib/server/rsal';
 
-const TYPES = new Set(['hard', 'probability', 'uncertainty', 'som']);
+const TYPES = new Set([
+  'hard',
+  'probability',
+  'uncertainty',
+  'som',
+  // Derived from the three-class product, served as their own files.
+  'binary',
+  'binary_probability',
+]);
 
 /**
  * GET /api/projects/{id}/exports?type=hard|probability|uncertainty&dataset=…&accept_unverified_schema=true

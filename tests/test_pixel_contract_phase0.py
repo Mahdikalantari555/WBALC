@@ -156,7 +156,8 @@ def test_predict_names_the_reference_dataset_and_provenance(client, project, dat
 def test_predict_rejects_a_dataset_from_another_project(client, project, dataset, labeled):
     pid = project["id"]
     other = client.post(
-        "/projects", json={"name": "Other", "classes": ["water", "vegetation"]}
+        "/projects",
+        json={"name": "Other", "classes": ["water", "vegetation"], "generic_classes": True},
     ).json()
     foreign = upload(client, other["id"], geotiff())
     client.post(f"/projects/{pid}/train", json={"model_type": "rf", "params": {"n_estimators": 10}})

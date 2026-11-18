@@ -19,11 +19,35 @@ export interface ProjectView {
   classificationConfig: {
     internalClasses: string[];
     binaryOutputInterpretation: BinaryInterpretation;
+    labelAliases: Record<string, string[]>;
   };
+  /** Null for a generic/legacy project that never opted into the water taxonomy. */
+  taxonomy: TaxonomyView | null;
   studyAreaGeometry: Record<string, unknown> | null;
   studyAreaCrs: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TaxonomyView {
+  version: string | null;
+  source: 'default' | 'project' | 'legacy';
+  classes: string[];
+  displayNames: Record<string, string>;
+  aliases: Record<string, string[]>;
+}
+
+/** Derived binary water interpretation of a three-class product. */
+export interface BinaryView {
+  interpretation: 'water_vs_non_water' | 'open_water_vs_other';
+  version: string;
+  available: boolean;
+  /** class id -> 'water' | 'non_water' (only classes the model actually learned) */
+  mapping: Record<string, string>;
+  sourceClasses: string[];
+  missingClasses: string[];
+  reason: string | null;
+  taxonomyVersion: string | null;
 }
 
 export interface DatasetView {
@@ -172,7 +196,7 @@ export interface QueryBatchView {
 }
 
 export interface MapFieldView {
-  layer: 'hard' | 'uncertainty';
+  layer: 'hard' | 'uncertainty' | 'binary';
   method: string | null;
   datasetId: string;
   iteration: number;
@@ -191,6 +215,8 @@ export interface MapFieldView {
   min: number;
   max: number;
   stale: boolean;
+  /** Derived water interpretation; null when the run recorded none. */
+  binary: BinaryView | null;
   /** True only when the reference raster provably carries the model's bands. */
   bandSchemaVerified: boolean;
   bandSchemaReason: string | null;

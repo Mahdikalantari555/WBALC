@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { toDataset, toMapField } from './server/adapter';
-import type { RsalDataset, RsalMapField } from './server/rsal';
+import { toDataset, toMapField, toProject } from './server/adapter';
+import type { RsalDataset, RsalMapField, RsalProject } from './server/rsal';
 
 /**
  * Phase 0 (harden-pixel-classification-contract) contract tests.
@@ -139,5 +139,106 @@ describe('map field provenance', () => {
     expect(view.bandSchemaVerified).toBe(false);
     expect(view.studyAreaApplied).toBe(false);
     expect(view.studyAreaNote).toBeNull();
+  });
+});
+
+describe('water taxonomy and derived binary product', () => {
+  const project = (
+    overrides: Partial<RsalProject> = {},
+  ): RsalProject => ({
+    id: 4,
+    name: 'Estuary',
+    description: '',
+    classes: ['open_water', 'emergent_vegetation', 'land'],
+    status: 'active',
+    study_area_geometry: null,
+    study_area_crs: null,
+    classification_config: {
+      internal_classes: ['open_water', 'emergent_vegetation', 'land'],
+      binary_output_interpretation: 'water_vs_non_water',
+      label_aliases: { emergent_vegetation: ['reed'] },
+    },
+    taxonomy: {
+      version: 'wbalc-water-taxonomy-v1',
+      classes: ['open_water', 'emergent_vegetation', 'land'],
+      display_names: { open_water: 'Open water' },
+      aliases: { emergent_vegetation: ['emergent_vegetation', 'reed'] },
+      crosswalk: { reed: 'emergent_vegetation' },
+      binary_interpretation: 'water_vs_non_water',
+      source: 'default',
+    },
+    created_at: '2025-04-14T07:41:00Z',
+    updated_at: '2025-04-14T07:41:00Z',
+    ...overrides,
+  });
+
+  it('shapes the water taxonomy with its aliases and version', () => {
+    const view = toProject(project());
+    expect(view.taxonomy?.version).toBe('wbalc-water-taxonomy-v1');
+    expect(view.taxonomy?.classes).toEqual(['open_water', 'emergent_vegetation', 'land']);
+    expect(view.taxonomy?.aliases.emergent_vegetation).toContain('reed');
+    expect(view.classificationConfig.labelAliases.emergent_vegetation).toEqual(['reed']);
+  });
+
+  it('reports a generic project as having no water taxonomy', () => {
+    const view = toProject(
+      project({
+        classes: ['water', 'vegetation'],
+        taxonomy: null,
+        classification_config: {
+          internal_classes: ['water', 'vegetation'],
+          binary_output_interpretation: 'water_vs_non_water',
+        },
+      }),
+    );
+    expect(view.taxonomy).toBeNull();
+    expect(view.classificationConfig.labelAliases).toEqual({});
+  });
+
+  it('carries the derived binary mapping and availability', () => {
+    const view = toMapField(
+      field({
+        classes: ['open_water', 'emergent_vegetation', 'land'],
+        binary: {
+          interpretation: 'water_vs_non_water',
+          version: 'binary-water-v1',
+          available: true,
+          mapping: { open_water: 'water', emergent_vegetation: 'water', land: 'non_water' },
+          source_classes: ['open_water', 'emergent_vegetation', 'land'],
+          missing_classes: [],
+          reason: null,
+          taxonomy_version: 'wbalc-water-taxonomy-v1',
+          exports: { binary: '/projects/1/download/binary' },
+        },
+      }),
+    );
+    expect(view.binary?.available).toBe(true);
+    expect(view.binary?.mapping.emergent_vegetation).toBe('water');
+    expect(view.binary?.taxonomyVersion).toBe('wbalc-water-taxonomy-v1');
+  });
+
+  it('keeps an unavailable binary product visible instead of hiding it', () => {
+    const view = toMapField(
+      field({
+        binary: {
+          interpretation: 'water_vs_non_water',
+          version: 'binary-water-v1',
+          available: false,
+          mapping: { open_water: 'water', land: 'non_water' },
+          source_classes: ['open_water', 'land'],
+          missing_classes: ['emergent_vegetation'],
+          reason: 'Binary interpretation needs emergent_vegetation, which this model never learned',
+          taxonomy_version: 'wbalc-water-taxonomy-v1',
+          exports: {},
+        },
+      }),
+    );
+    expect(view.binary?.available).toBe(false);
+    expect(view.binary?.missingClasses).toEqual(['emergent_vegetation']);
+    expect(view.binary?.reason).toContain('never learned');
+  });
+
+  it('reports no binary product for a run that recorded no interpretation', () => {
+    expect(toMapField(field({ binary: null })).binary).toBeNull();
   });
 });

@@ -25,6 +25,9 @@ class Project(Base):
     study_area_geometry: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     study_area_crs: Mapped[str | None] = mapped_column(String(255), nullable=True)
     classification_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Versioned water-body taxonomy + label crosswalk. NULL = generic/legacy
+    # project whose class list this application did not configure.
+    taxonomy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -115,6 +118,8 @@ class Label(Base):
     geometry: Mapped[dict] = mapped_column(JSON)  # GeoJSON geometry
     coordinate_space: Mapped[str] = mapped_column(String(10), default="pixel")  # pixel | map
     class_name: Mapped[str] = mapped_column(String(255))
+    # Text the annotator submitted when it differs from `class_name` (an alias).
+    submitted_class_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     iteration: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -131,6 +136,8 @@ class TrainingRun(Base):
     model_type: Mapped[str] = mapped_column(String(50))  # rf | lightgbm
     checkpoint_path: Mapped[str] = mapped_column(String(1024))
     classes: Mapped[list] = mapped_column(JSON)  # class order used by the model
+    # The subset of `classes` this model actually learned (no labels for the rest).
+    trained_classes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     n_samples: Mapped[int] = mapped_column(Integer)
     metrics: Mapped[dict] = mapped_column(JSON)
     params: Mapped[dict] = mapped_column(JSON, default=dict)

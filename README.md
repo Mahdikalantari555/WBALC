@@ -117,8 +117,9 @@ any future pixel-wise operation; no scene is assumed to be aligned.
 
 The database migration runner applies versioned additive migrations at startup.
 Migration 1 adds project study-area/classification fields and creates the scenes
-table; migration 2 adds `datasets.band_schema` (nullable JSON). Both are additive,
-idempotent and preserve existing RSAL project/dataset rows. A `NULL` band schema
+table; 2 adds `datasets.band_schema`, 3 adds `projects.taxonomy`, 4 adds
+`labels.submitted_class_name` and 5 adds `training_runs.trained_classes`. All are
+additive, idempotent and preserve existing RSAL rows. A `NULL` band schema
 means "undeclared": band identity is never backfilled from filenames or a sensor
 default, so legacy datasets keep requiring an explicit override to be used.
 
@@ -287,6 +288,38 @@ this is not an implicit WGS84 conversion. Point labels outside the selected
 raster are rejected. Polygon labels must be closed finite rings and overlap the
 dataset. `LICENSE` applies to repository code only; third-party components keep
 their own licenses, which require a separate redistribution review.
+
+## Water taxonomy and the derived binary product
+
+A WBALC project is not just "some classes". Creating one with the default water
+taxonomy records a versioned snapshot:
+
+| Piece | Value |
+| --- | --- |
+| Taxonomy version | `wbalc-water-taxonomy-v1` |
+| Internal classes (order is identity) | `open_water`, `emergent_vegetation`, `land` |
+| Label crosswalk | every class ID, plus only the aliases the project configured |
+| Binary interpretation | `water_vs_non_water` or `open_water_vs_other` |
+
+- **Aliases are explicit configuration.** `reed` is *not* a synonym for emergent
+  vegetation unless the project says so (`label_aliases`). Submitting an unmapped
+  term is a **422** that names the project's classes and, where possible, the
+  closest configured ones. When an alias *is* used, the resolved class and the
+  original submitted text are both kept (`labels.submitted_class_name`).
+- **Generic projects opt out on purpose.** `GET /projects/{id}/taxonomy` says
+  `source: "legacy"` for a project created with `generic_classes: true`; such a
+  project keeps its own class list and gets **no** derived water product.
+- **The three-class map is the source product.** `/download/binary` (1 = water,
+  0 = other) and `/download/binary_probability` (P(water)) are *derived* files with
+  `derived=true`, the exact mapping and the source run in their tags. Neither
+  overwrites or collapses the three-class output, and `layer=binary` on the map is
+  that same derivation, not a second model.
+- **Absent classes are reported, not fabricated.** If the model never learned a
+  class the interpretation needs, the plan comes back `available: false` with the
+  missing class named, no binary file is written and no download link is offered.
+- **Semantics are frozen per run.** The taxonomy snapshot travels with the run and
+  the checkpoint; changing the project's interpretation afterwards does not rewrite
+  what an existing model means — a new run is required.
 
 ## Band identity and the study-area mask
 

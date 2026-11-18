@@ -33,7 +33,7 @@ export const views = {
 } as const;
 
 export type ViewId = keyof typeof views;
-export type MapLayer = 'imagery' | 'classification' | 'uncertainty' | 'samples';
+export type MapLayer = 'imagery' | 'classification' | 'binary' | 'uncertainty' | 'samples';
 export type BandMode = 'true-color' | 'false-color' | 'ndvi';
 export type UncertaintyMethod = 'entropy' | 'margin' | 'least_confidence';
 export type Selection =
@@ -92,7 +92,13 @@ class Workspace {
 
   // ---- map
   map = $state({
-    layers: { imagery: true, classification: true, uncertainty: false, samples: true } as Record<
+    layers: {
+      imagery: true,
+      classification: true,
+      binary: false,
+      uncertainty: false,
+      samples: true,
+    } as Record<
       MapLayer,
       boolean
     >,
@@ -101,7 +107,11 @@ class Workspace {
     method: 'entropy' as UncertaintyMethod,
     selected: null as Selection | null,
   });
-  field = $state<{ hard: unknown; uncertainty: unknown }>({ hard: null, uncertainty: null });
+  field = $state<{ hard: unknown; uncertainty: unknown; binary: unknown }>({
+    hard: null,
+    uncertainty: null,
+    binary: null,
+  });
   fieldLoading = $state(false);
   fieldError = $state<string | null>(null);
   /** HTTP status of the last field failure: 409 = band-schema conflict. */
@@ -212,7 +222,7 @@ class Workspace {
         primary: runs[0]?.id ?? null,
         challenger: runs[1]?.id ?? runs[0]?.id ?? null,
       };
-      this.field = { hard: null, uncertainty: null };
+      this.field = { hard: null, uncertainty: null, binary: null };
       this.schemaOverride = false;
       this.fieldErrorStatus = null;
       this.error = null;
@@ -227,7 +237,7 @@ class Workspace {
   selectDataset(id: string) {
     if (this.datasetId === id) return;
     this.datasetId = id;
-    this.field = { hard: null, uncertainty: null };
+    this.field = { hard: null, uncertainty: null, binary: null };
     this.map.selected = null;
     // A different raster is a different band question: never carry an override.
     this.schemaOverride = false;
@@ -244,7 +254,7 @@ class Workspace {
    */
   private fieldCache = new globalThis.Map<string, MapFieldView>();
 
-  private fieldKey(layer: 'hard' | 'uncertainty', datasetId: string) {
+  private fieldKey(layer: 'hard' | 'uncertainty' | 'binary', datasetId: string) {
     const run = this.latestRun;
     const method = layer === 'uncertainty' ? this.map.method : 'hard';
     // The override is part of the identity: an overridden field is a different
@@ -269,18 +279,27 @@ class Workspace {
     if (!dataset || !this.latestRun) return;
     const wantHard = this.map.layers.classification;
     const wantUncertainty = this.map.layers.uncertainty;
+    const wantBinary = this.map.layers.binary;
 
     const hardKey = this.fieldKey('hard', dataset.id);
     const uncertaintyKey = this.fieldKey('uncertainty', dataset.id);
+    const binaryKey = this.fieldKey('binary', dataset.id);
     const cachedHard: MapFieldView | null = wantHard
       ? (this.fieldCache.get(hardKey) ?? null)
       : null;
     const cachedUncertainty: MapFieldView | null = wantUncertainty
       ? (this.fieldCache.get(uncertaintyKey) ?? null)
       : null;
-    if ((!wantHard || cachedHard) && (!wantUncertainty || cachedUncertainty)) {
+    const cachedBinary: MapFieldView | null = wantBinary
+      ? (this.fieldCache.get(binaryKey) ?? null)
+      : null;
+    if (
+      (!wantHard || cachedHard) &&
+      (!wantUncertainty || cachedUncertainty) &&
+      (!wantBinary || cachedBinary)
+    ) {
       // Everything asked for is already known: no request at all.
-      this.field = { hard: cachedHard, uncertainty: cachedUncertainty };
+      this.field = { hard: cachedHard, uncertainty: cachedUncertainty, binary: cachedBinary };
       this.fieldError = null;
       return;
     }
@@ -289,7 +308,7 @@ class Workspace {
     this.fieldError = null;
     this.fieldErrorStatus = null;
     try {
-      const [hard, uncertainty] = await Promise.all([
+      const [hard, uncertainty, binary] = await Promise.all([
         wantHard
           ? api.mapField(this.project!.id, {
               layer: 'hard',
@@ -306,9 +325,18 @@ class Workspace {
               acceptUnverifiedSchema: this.schemaOverride,
             })
           : Promise.resolve(null),
+        wantBinary
+          ? api.mapField(this.project!.id, {
+              layer: 'binary',
+              method: this.map.method,
+              datasetId: dataset.id,
+              acceptUnverifiedSchema: this.schemaOverride,
+            })
+          : Promise.resolve(null),
       ]);
       if (hard) this.fieldCache.set(hardKey, hard);
       if (uncertainty) this.fieldCache.set(uncertaintyKey, uncertainty);
+      if (binary) this.fieldCache.set(binaryKey, binary);
       if (this.fieldCache.size > 8) {
         const oldest = this.fieldCache.keys().next().value;
         if (oldest !== undefined) this.fieldCache.delete(oldest);
@@ -316,6 +344,7 @@ class Workspace {
       this.field = {
         hard: hard ?? cachedHard ?? this.field.hard,
         uncertainty: uncertainty ?? cachedUncertainty ?? this.field.uncertainty,
+        binary: binary ?? cachedBinary ?? this.field.binary,
       };
     } catch (error) {
       this.fieldError = error instanceof Error ? error.message : String(error);
@@ -350,7 +379,7 @@ class Workspace {
       this.runs = [run, ...this.runs.filter((item) => item.id !== run.id)];
       this.arena = { primary: run.id, challenger: this.arena.primary ?? this.runs[1]?.id ?? null };
       // A new run invalidates any map field painted from the previous one.
-      this.field = { hard: null, uncertainty: null };
+      this.field = { hard: null, uncertainty: null, binary: null };
       if (this.map.layers.classification || this.map.layers.uncertainty) void this.loadMapField();
       return run;
     } catch (error) {

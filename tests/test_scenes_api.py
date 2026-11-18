@@ -73,6 +73,7 @@ class TestSceneFoundation:
         project = created.json()
         assert project["classes"] == ["open_water", "emergent_vegetation", "land"]
         assert project["classification_config"] == {
+            "label_aliases": {},
             "internal_classes": ["open_water", "emergent_vegetation", "land"],
             "binary_output_interpretation": "water_vs_non_water",
         }
@@ -253,11 +254,24 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
     connection = sqlite3.connect(db_path)
     # Both additive migrations must have run exactly once, and running the app a
     # second time must not add duplicates.
-    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,), (2,)]
+    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (5,),
+    ]
     columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     assert {"study_area_geometry", "study_area_crs", "classification_config"}.issubset(columns)
     dataset_columns = {row[1] for row in connection.execute("PRAGMA table_info(datasets)")}
     assert "band_schema" in dataset_columns
+    # Phase 1 additions are additive too, and the legacy project did not acquire
+    # water semantics it never opted into.
+    assert "taxonomy" in columns
+    assert "submitted_class_name" in {
+        row[1] for row in connection.execute("PRAGMA table_info(labels)")
+    }
+    assert connection.execute("SELECT taxonomy FROM projects").fetchone() == (None,)
     connection.close()
 
 

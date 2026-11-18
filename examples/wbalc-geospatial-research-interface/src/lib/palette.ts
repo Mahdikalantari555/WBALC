@@ -30,6 +30,17 @@ export function classColor(name: string, index = 0): string {
 }
 
 /** Colours for a class list, in the engine's declared order. */
+/**
+ * Colours for the *derived* binary water product.
+ *
+ * Deliberately not the first entries of the class palette: a binary product is a
+ * different product from the three-class map, and it must not look like it.
+ */
+export const BINARY_COLORS: Record<'water' | 'non_water', string> = {
+  water: '#3a7dd0',
+  non_water: '#8a9b6a',
+};
+
 export function classColors(classes: string[]): Record<string, string> {
   const result: Record<string, string> = {};
   classes.forEach((name, index) => {
