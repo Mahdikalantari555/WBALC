@@ -1,44 +1,78 @@
 <script lang="ts">
-  import { classKeys, classes, evaluateModel, type Model, type PredictionClass } from '../data/research';
+  import { useT } from '$lib/t.svelte';
+  import type { MetricsView } from '$lib/types';
+  import { classColor } from '$lib/palette';
 
-  let { model, focus = 'all' }: { model: Model; focus?: PredictionClass | 'all' } = $props();
+  let { metrics, focus = 'all' }: { metrics: MetricsView; focus?: string } = $props();
+
+  const { t, integer, percent } = useT();
   let normalized = $state(false);
-  const metrics = $derived(evaluateModel(model));
+
+  const total = $derived(
+    metrics.confusionMatrix.reduce((sum, row) => sum + row.reduce((a, b) => a + b, 0), 0),
+  );
 </script>
 
 <section class="surface section-box matrix-panel">
-  <div class="section-heading"><div><h2>Confusion matrix</h2><p>{model.name} / {metrics.total} simulated references</p></div>
-    <div class="segments" role="group" aria-label="Confusion matrix display">
-      <button class:chosen={!normalized} aria-pressed={!normalized} onclick={() => { normalized = false; }}>Count</button>
-      <button class:chosen={normalized} aria-pressed={normalized} onclick={() => { normalized = true; }}>Row %</button>
+  <div class="section-heading">
+    <div>
+      <h2>{t('arena.confusion')}</h2>
+      <p>{t('arena.confusionHint', { total: integer(total) })} · {metrics.modelType} / {metrics.resolution}</p>
+    </div>
+    <div class="segments" role="group" aria-label={t('arena.confusion')}>
+      <button class:chosen={!normalized} aria-pressed={!normalized} onclick={() => (normalized = false)}>{t('arena.count')}</button>
+      <button class:chosen={normalized} aria-pressed={normalized} onclick={() => (normalized = true)}>{t('arena.rowPercent')}</button>
     </div>
   </div>
-  <div class="matrix-axis">PREDICTED CLASS</div>
-  <table class="matrix-table">
-    <caption class="sr-only">Simulated confusion matrix, rows are reference labels and columns are predictions.</caption>
-    <thead><tr><th scope="col">Reference</th>{#each classKeys as key}<th scope="col" aria-label={classes[key].name}>{classes[key].short}</th>{/each}</tr></thead>
-    <tbody>
-      {#each model.matrix as row, i}
-        <tr class:deemphasized={focus !== 'all' && focus !== classKeys[i]}>
-          <th scope="row"><span class="class-label"><i class="class-dot" style:--class-color={classes[classKeys[i]].color}></i>{classes[classKeys[i]].short}</span></th>
-          {#each row as value, j}
-            <td class:diagonal={i === j} style:--heat={i === j ? `${(value / metrics.rows[i].support) * 45}%` : `${Math.min(49, value * 2.9)}%`}
-              title={`${classes[classKeys[i]].name} reference, ${classes[classKeys[j]].name} predicted`}>
-              {normalized ? `${(value / metrics.rows[i].support * 100).toFixed(1)}%` : value}
-            </td>
+
+  {#if metrics.confusionMatrix.length}
+    <div class="matrix-axis">{t('arena.predicted')}</div>
+    <div class="table-scroll">
+      <table class="matrix-table">
+        <caption class="sr-only">{t('arena.confusion')}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{t('arena.reference')}</th>
+            {#each metrics.classes as name}
+              <th scope="col">{name}</th>
+            {/each}
+          </tr>
+        </thead>
+        <tbody>
+          {#each metrics.confusionMatrix as row, i}
+            {@const rowTotal = row.reduce((a, b) => a + b, 0)}
+            <tr class:deemphasized={focus !== 'all' && focus !== metrics.classes[i]}>
+              <th scope="row">
+                <span class="class-label"><i class="class-dot" style:--class-color={classColor(metrics.classes[i], i)}></i>{metrics.classes[i]}</span>
+              </th>
+              {#each row as value, j}
+                <td
+                  class:diagonal={i === j}
+                  style:--heat={i === j
+                    ? `${rowTotal ? (value / rowTotal) * 45 : 0}%`
+                    : `${Math.min(49, (rowTotal ? value / rowTotal : 0) * 60)}%`}
+                >
+                  <span class="ltr-numeric">
+                    {normalized ? percent(rowTotal ? value / rowTotal : 0) : integer(value)}
+                  </span>
+                </td>
+              {/each}
+            </tr>
           {/each}
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-  <p class="matrix-note">Rows are reference labels. Columns are model predictions.</p>
+        </tbody>
+      </table>
+    </div>
+    <p class="matrix-note">{t('arena.reference')} → {t('arena.predicted')}</p>
+  {:else}
+    <div class="empty-state"><strong>{t('arena.noMetrics')}</strong></div>
+  {/if}
 </section>
 
 <style>
+  .matrix-axis { color: var(--faint); text-align: right; padding-inline-end: 13%; font: 9px var(--mono); letter-spacing: .05em; text-transform: uppercase; }
   .matrix-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 4px; margin-inline: -4px; width: calc(100% + 8px); }
-  .matrix-axis { color: var(--faint); text-align: right; padding-right: 13%; font: 9px var(--mono); letter-spacing: .05em; }
-  .matrix-table th { color: var(--muted); text-align: left; font-size: 10px; font-weight: 550; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .matrix-table th:first-child { width: 28%; }
+  .matrix-table th { color: var(--muted); text-align: start; font-size: 10px; font-weight: 550; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .matrix-table th:first-child { width: 30%; }
   .matrix-table thead th:not(:first-child) { text-align: center; }
   .matrix-table td { font: 11.5px/1 var(--mono); color: #f3d8b2; text-align: center; border: 1px solid #354359; height: 39px; border-radius: 4px; background: color-mix(in srgb, #9b572e var(--heat), #172336); }
   .matrix-table td.diagonal { color: #e1faf2; border-color: #365d60; background: color-mix(in srgb, #30887f var(--heat), #152336); }

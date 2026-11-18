@@ -1,47 +1,96 @@
-# WBALC | Zarivar Lake research workspace
+# WBALC research workspace (SvelteKit example)
 
-WBALC (Water Body Active Learning Classification) is a frontend-only SvelteKit prototype for exploring how Sentinel-1 SAR and Sentinel-2 optical observations could support open-water and aquatic-vegetation mapping. The app opens on the Geospatial Workspace.
+A second, research-oriented frontend for the WBALC engine. It is **not** a
+mock: every observation, label, metric, prediction and raster byte on screen is
+fetched from the live WBALC (RSAL) FastAPI backend through a thin server-side
+adapter. The Next.js TerraLab workspace in `frontend/` remains the primary UI;
+this example exists to exercise the same backend contracts from a different
+stack (SvelteKit 5 / Svelte 5 runes / Vite / Leaflet) and to offer a bilingual
+(Persian/English, RTL) interface.
 
-## Run locally
-
-Use Node.js 20.19+ or 22.12+ and npm.
+## Runs against WBALC (RSAL)
 
 ```sh
+# 1. Start the engine (repo root)
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# 2. Start this app
+cd examples/wbalc-geospatial-research-interface
 npm ci
-npm run dev:kit
+RSAL_API_URL=http://localhost:8000 npm run dev
 ```
 
-Open the local URL printed by Vite. For a static production build, run `npm run build:kit`, then `npm run preview:kit`. The static output is `build/`. No application server or API keys are required. After installing dependencies, the app uses only local assets, including imagery and fonts.
+Open the URL Vite prints (default <http://localhost:5173>). The engine URL is read
+**on the server only**; the browser never talks to RSAL, so there is no CORS
+surface and no backend URL in the client bundle.
 
-The original starter entry remains available through `npm run dev`, `npm run build`, and `npm run preview`. Its small React bridge in `src/App.tsx` mounts the same Svelte workspace. The SvelteKit entry at `src/routes/+page.svelte` renders it directly and does not ship React. Use `npm run check` for Svelte and TypeScript diagnostics.
+### Environment variables
 
-## Research views
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RSAL_API_URL` | `http://localhost:8000` | Base URL of the WBALC engine (server-side). |
+| `RSAL_API_TOKEN` | unset | Optional bearer token sent as `authorization` on adapter requests. |
+| `PORT` | `5173` | Port the dev/preview/Node server binds to. |
+| `HOST` | `0.0.0.0` | Bind address for the production Node server. |
 
-| View | What to try |
+Copy [`.env.example`](.env.example) to `.env` for local development.
+
+## Scripts
+
+| Command | What it does |
 | --- | --- |
-| Overview | Review the project status, shared water-area series, latest observation, model summary, and activity. Filter the chart by sensor or select an observation. |
-| Geospatial Workspace | Pan or zoom the offline Leaflet map. Switch between the satellite-style illustration and terrain schematic, toggle vector layers, change opacity, inspect a sample or classification, and export displayed vector layers as GeoJSON. |
-| Temporal Analysis | Filter 12 observations by sensor, select dates from the chart or date pickers, swap the comparison dates, and inspect acquisition metadata and the schematic water gain/loss map. |
-| Active Learning | Filter the local queue by review status, uncertainty, and predicted class. Compare predicted overlays with the illustration, label samples, and verify that counts update. Labels persist in browser storage. |
-| Model Arena | Compare Sentinel Fusion RF, Optical U-Net, and SAR Threshold across five metrics and inference time. Switch detailed metrics between the two selected models and inspect their side-by-side footprints and configuration. |
-| Results & Evaluation | Filter by model and reference class, inspect confusion counts or row percentages, select example error sites, and download simulated CSV and GeoJSON results. |
+| `npm run dev` | Vite dev server with HMR (`0.0.0.0:5173`). |
+| `npm run build` | Production build (`adapter-node`, output in `build/`). |
+| `npm start` | Serve the production build (`node build`). |
+| `npm run check` | `svelte-check` + TypeScript diagnostics. |
+| `npm test` | Vitest: geometry, adapter shaping, i18n and jsdom component tests. |
+| `npm run check:i18n` | Fails if the `en`/`fa` dictionaries diverge or placeholders differ. |
 
-The project menu opens the project overview. The toolbar date applies across the workspace, and notification items link to their relevant views. Use the local profile menu to reset demo reviews. View URLs are shareable hash links, for example `/#/temporal`.
+## The six views
 
-## Source layout
-
-| Path | Responsibility |
+| View | Reads from the engine |
 | --- | --- |
-| `src/lib/Workspace.svelte` | Shared navigation, toolbar, local preferences, and research view shell |
-| `src/lib/state.svelte.ts` | Shared observation, map, model, and review state |
-| `src/lib/pages/` | Six research views |
-| `src/lib/components/` | Leaflet map, map previews, chart, selectors, and evaluation tables |
-| `src/lib/data/` | Typed mock dataset, illustrative map geometry, metric calculations, and browser exports |
-| `public/maps/` | Bundled satellite-style illustration and vector terrain fallback |
+| Overview | projects, datasets, scenes, labels, training runs → readiness checklist, acquisition timeline, latest metrics |
+| Geospatial Workspace | original GeoTIFF bytes (`/dataset/{id}/file`), `/predict/map` hard + uncertainty fields, labels |
+| Temporal Analysis | `/scenes` metadata and native-grid comparison (no implicit alignment) |
+| Active Learning | `/query` batches, label submit/delete, GeoJSON import |
+| Model Arena | `/metrics/history` runs, confusion matrix, per-class metrics |
+| Results & Evaluation | recorded protocol, per-class IoU, label distribution, CSV/JSON export |
+
+## Design notes
+
+- **Adapter (BFF).** `src/routes/api/**` proxies RSAL with `$env/dynamic/private`
+  and translates engine payloads into the view models in `src/lib/types.ts`
+  (`src/lib/server/adapter.ts`). Values RSAL does not provide stay `null`; the UI
+  renders an empty state rather than a fabricated number.
+- **Rasters are read, never rewritten.** `src/lib/raster.ts` opens the original
+  GeoTIFF with geotiff.js using HTTP Range requests (forwarded by the adapter)
+  and paints the requested band mode on a canvas. No reprojection, resampling or
+  caching of derived pixels on the server.
+- **Two coordinate systems, never mixed.** A dataset is drawn on a WGS84 overlay
+  when it has a usable CRS (EPSG:4326, EPSG:3857, or a WGS84/NAD83 UTM zone) and
+  a north-up affine; otherwise the map switches to pixel space (`CRS.Simple`) and
+  says so. Unsupported CRSs are reported, not guessed (`src/lib/geo.ts`).
+- **The queue is browser state.** RSAL `/query` is stateless, so the pending batch,
+  drafts and skips live in `localStorage` per project, while submitted labels are
+  written to the engine. Deleting a sample removes every version in RSAL.
+- **Bilingual with no i18n dependency.** `src/lib/i18n/` holds typed `en`/`fa`
+  dictionaries and a locale store; `src/hooks.server.ts` stamps `<html lang dir>`
+  from the `wbalc.locale` cookie so the first paint is already correct, and a
+  runtime switch updates strings, direction and `Intl` formatting without a
+  reload. Layout uses logical (`ms-`, `me-`, `ps-`, `pe-`, `text-start`) CSS.
+- **Honest boundaries.** The engine registers scenes but does not classify them or
+  compute per-date water area yet, so the timeline plots *registered
+  acquisitions*, and the temporal view states that area change is unavailable
+  instead of inventing series values.
 
 ## Scope and limitations
 
-- One study area and one image illustration are bundled. Dates and sensors use schematic footprints and a grayscale SAR-style treatment, not distinct scenes or measured radar backscatter. The coordinates, areas, map scale, and GeoJSON geometry are indicative and are not suitable for scientific or navigation use.
-- Class predictions, validation counts, uncertainty, and inference times are simulated. Precision, recall, F1, and IoU are derived from the fixed mock confusion counts. Local labeling does not change these benchmark results or trigger retraining.
-- The project reviewed total includes 124 illustrative archive reviews; only the 12 samples in the prototype queue can be inspected or edited. Edits are browser-local and are not shared across users or devices.
-- No backend, authentication, database, satellite acquisition, or model execution is implemented.
+- Single-workspace, no authentication; the adapter forwards an optional token but
+  the app has no user model.
+- Review state is per browser. There is no shared queue or server-side draft.
+- The engine's own limits still apply: uncertainty/hybrid queries need a
+  patch-resolution checkpoint, and identical band counts are not proof of
+  compatible spectral schemas.
+- No imagery is bundled. Without a project in the engine the app shows a
+  connection/empty state and creates nothing.

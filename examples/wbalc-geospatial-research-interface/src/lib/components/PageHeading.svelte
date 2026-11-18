@@ -2,14 +2,24 @@
   import { Crosshair } from '@lucide/svelte';
   import type { Snippet } from 'svelte';
 
-  let { title, description, eyebrow = 'ZARIVAR LAKE / KURDISTAN, IRAN', actions }: {
-    title: string; description: string; eyebrow?: string; actions?: Snippet;
+  let {
+    title,
+    description,
+    eyebrow = '',
+    actions,
+  }: {
+    title: string;
+    description: string;
+    eyebrow?: string;
+    actions?: Snippet;
   } = $props();
 </script>
 
 <div class="page-heading">
   <div>
-    <div class="eyebrow"><Crosshair size={13} strokeWidth={1.8} />{eyebrow}</div>
+    <div class="eyebrow">
+      <Crosshair size={13} strokeWidth={1.8} />{eyebrow}
+    </div>
     <h1>{title}</h1>
     <p>{description}</p>
   </div>

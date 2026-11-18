@@ -255,3 +255,108 @@ a { color: inherit; text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* ---------------------------------------------------------------- RTL / i18n
+   Layout uses logical properties throughout. These rules cover the few places
+   where a physical value is unavoidable (map controls, icon direction, slider
+   fill) so a Persian UI mirrors cleanly instead of half-mirroring. */
+html[dir='rtl'] .select {
+  padding: 0 10px 0 29px;
+  background-position: left 7px center;
+}
+html[dir='rtl'] .layer-opacity { margin: 0 39px 13px 0; }
+html[dir='rtl'] .layer-switch span { transform-origin: center; }
+html[dir='rtl'] .layer-switch[aria-checked='true'] span { transform: translateX(-13px); }
+html[dir='rtl'] .layer-opacity input::-webkit-slider-runnable-track {
+  background: linear-gradient(to left, #63dcca var(--fill), #33485b var(--fill));
+}
+html[dir='rtl'] .layer-opacity input::-moz-range-track {
+  background: linear-gradient(to left, #63dcca var(--fill), #33485b var(--fill));
+}
+html[dir='rtl'] .leaflet-control-zoom { direction: ltr; }
+html[dir='rtl'] .metric-track i,
+html[dir='rtl'] .consistency-track i,
+html[dir='rtl'] .queue-progress i { float: right; }
+html[dir='rtl'] .kv-list dd { text-align: left; }
+html[dir='rtl'] .data-table th,
+html[dir='rtl'] .data-table td { text-align: right; }
+html[dir='rtl'] .data-table td.number,
+html[dir='rtl'] .data-table th.number { text-align: left; }
+html[dir='rtl'] .matrix-axis { text-align: left; padding-right: 0; padding-left: 13%; }
+html[dir='rtl'] .ltr-numeric { direction: ltr; unicode-bidi: isolate; }
+
+/* Locale switcher */
+.locale-switch { display: inline-flex; gap: 2px; align-items: center; }
+.locale-switch button {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.locale-switch button:hover { color: var(--ink); }
+.locale-switch button[aria-pressed='true'] {
+  color: #8fecd9;
+  background: #19323f;
+  border-color: #284655;
+}
+
+/* Async-data surface: one consistent skeleton/stale look across views. */
+.surface-loading { opacity: .55; pointer-events: none; }
+.inline-error {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 11px 13px;
+  margin-bottom: 15px;
+  border: 1px solid #7a4a3a;
+  border-radius: 7px;
+  background: #2b1c1a;
+  color: #f4d3c4;
+  font-size: 12px;
+}
+.inline-error strong { display: block; color: #ffd9c9; font-size: 12.5px; margin-bottom: 2px; }
+.inline-error code { font-family: var(--mono); font-size: 11px; }
+.badge-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 9.5px var(--mono);
+  letter-spacing: .045em;
+  color: #93e8d8;
+  border: 1px solid #2e5b58;
+  background: #16302f;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.badge-live::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5be2cd;
+}
+.badge-muted {
+  display: inline-flex;
+  align-items: center;
+  font: 9.5px var(--mono);
+  letter-spacing: .045em;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: #14202f;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--chip-color, var(--accent)); }

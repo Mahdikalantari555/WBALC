@@ -20,7 +20,10 @@ heavy raster/ML work runs in a worker thread so the event loop stays responsive.
 Frontend: Next.js (App Router) workspace in [`frontend/`](frontend/), with a
 study-project form and project-scoped scene collection alongside inherited
 single-scene tools. The browser talks to the backend through a server-side
-adapter.
+adapter. An optional second, bilingual (English/Persian, RTL) SvelteKit research
+workspace lives in
+[`examples/wbalc-geospatial-research-interface/`](examples/wbalc-geospatial-research-interface/)
+and runs against the same engine.
 
 ## Capabilities
 
@@ -214,6 +217,33 @@ verified end-to-end by:
 .venv/bin/python scripts/frontend_smoke.py --base http://localhost:3000
 ```
 
+## Frontend — research workspace example (SvelteKit)
+
+An optional, self-contained SvelteKit 5 frontend in
+[`examples/wbalc-geospatial-research-interface/`](examples/wbalc-geospatial-research-interface/)
+offers six research views (overview, geospatial workspace, temporal analysis,
+active learning, model arena, results & evaluation) on live engine data, with an
+offline Leaflet map rendered from the original GeoTIFF bytes and a full
+Persian/English UI with RTL support. It is **not** a mock: like TerraLab it talks
+to RSAL through its own server-side adapter, and it is never a default compose
+service.
+
+```bash
+cd examples/wbalc-geospatial-research-interface
+npm ci
+RSAL_API_URL=http://localhost:8000 npm run dev   # http://localhost:5173
+```
+
+```bash
+# verified end-to-end through the example's adapter routes
+.venv/bin/python scripts/research_frontend_smoke.py --base http://localhost:5173
+```
+
+See the [example README](examples/wbalc-geospatial-research-interface/README.md)
+for env vars, scripts and design notes, and the OpenSpec change
+[`wire-geospatial-research-frontend`](openspec/changes/wire-geospatial-research-frontend/)
+for the capability specs.
+
 ## Classification resolution and evaluation
 
 Training remains patch-based by default for backward compatibility. To explicitly
@@ -320,6 +350,8 @@ tests/               # backend unit/API tests incl. synthetic multi-sensor scene
 scripts/demo.py      # end-to-end AL loop against a live backend
 scripts/frontend_smoke.py  # end-to-end loop through the frontend adapter
 frontend/            # TerraLab Next.js workspace (see frontend/README.md)
+examples/wbalc-geospatial-research-interface/  # bilingual SvelteKit example (adapter + six views)
+scripts/research_frontend_smoke.py             # end-to-end loop through the example's adapter
 openspec/            # spec-driven change proposals + capability specs
 ```
 
@@ -336,3 +368,21 @@ isolated deletion, API responses, and migration of an RSAL-style project databas
 
 The frontend suite is `cd frontend && npm test` (25 node:test cases: shared
 pixel↔display transform, overlay colours, adapter payload builders).
+
+The research-workspace example has its own suites:
+
+```bash
+cd examples/wbalc-geospatial-research-interface
+npm run check          # svelte-check + TypeScript
+npm test               # Vitest: geometry, adapter shaping, i18n, jsdom components
+npm run check:i18n     # en/fa dictionary completeness + placeholder parity
+```
+
+Its browser-facing contract is verified end-to-end (project → upload → query →
+label → train → metrics/map/exports → scenes → import → delete → i18n) by
+`scripts/research_frontend_smoke.py`, which needs a live engine and the example
+running against it.
+
+`scripts/audit_performance.py` measures the same app against a live engine
+(adapter overhead, raster streaming, query/train/inference cost, SSR) and
+produces the tables in [`PERFORMANCE.md`](PERFORMANCE.md).

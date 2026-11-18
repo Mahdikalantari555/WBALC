@@ -31,6 +31,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Optional: bilingual SvelteKit research workspace example. Enable with:
+  #   docker compose --profile research up -d
+  research-workspace:
+    build:
+      context: ./examples/wbalc-geospatial-research-interface
+      args:
+        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
+    profiles: ["research"]
+    ports:
+      - "5173:5173"
+    environment:
+      RSAL_API_URL: http://api:8000
+      PORT: 5173
+      HOST: 0.0.0.0
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Optional: production-style database. Enable with:
   #   docker compose --profile postgres up -d
   # and set DATABASE_URL on the api service as shown above.
