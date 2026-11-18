@@ -68,7 +68,9 @@ export interface WorkspaceApi {
     resolution: 'patch' | 'pixel';
     evaluationStrategy: 'random' | 'spatial';
     modelType?: 'rf' | 'lightgbm';
+    acceptUnverifiedSchema?: boolean;
   }) => Promise<RunView | null>;
+  acceptSchemaOverride: () => Promise<void>;
 }
 
 class Workspace {
@@ -102,6 +104,14 @@ class Workspace {
   field = $state<{ hard: unknown; uncertainty: unknown }>({ hard: null, uncertainty: null });
   fieldLoading = $state(false);
   fieldError = $state<string | null>(null);
+  /** HTTP status of the last field failure: 409 = band-schema conflict. */
+  fieldErrorStatus = $state<number | null>(null);
+  /**
+   * Explicit, per-session acceptance that this raster's bands are what the model
+   * expects. It is never inferred: the engine refuses to guess, and the UI only
+   * sets this after the operator confirms. Reset whenever the dataset changes.
+   */
+  schemaOverride = $state(false);
 
   // ---- review queue (client state, per project)
   review = $state<ReviewState>({ ...EMPTY_REVIEW });
@@ -203,6 +213,8 @@ class Workspace {
         challenger: runs[1]?.id ?? runs[0]?.id ?? null,
       };
       this.field = { hard: null, uncertainty: null };
+      this.schemaOverride = false;
+      this.fieldErrorStatus = null;
       this.error = null;
       this.restoreReview();
     } catch (error) {
@@ -217,6 +229,9 @@ class Workspace {
     this.datasetId = id;
     this.field = { hard: null, uncertainty: null };
     this.map.selected = null;
+    // A different raster is a different band question: never carry an override.
+    this.schemaOverride = false;
+    this.fieldErrorStatus = null;
   }
 
   // ------------------------------------------------------------ map layers
@@ -232,7 +247,21 @@ class Workspace {
   private fieldKey(layer: 'hard' | 'uncertainty', datasetId: string) {
     const run = this.latestRun;
     const method = layer === 'uncertainty' ? this.map.method : 'hard';
-    return `${this.project?.id}:${datasetId}:${layer}:${method}:${run?.id ?? 'none'}`;
+    // The override is part of the identity: an overridden field is a different
+    // product from a verified one, and both may exist in one session.
+    return `${this.project?.id}:${datasetId}:${layer}:${method}:${run?.id ?? 'none'}:${
+      this.schemaOverride ? 'override' : 'strict'
+    }`;
+  }
+
+  /**
+   * Record the operator's explicit "these bands are the model's bands" decision
+   * and retry the field. The flag is sent to the engine, which stores it with
+   * the prediction, so the override is visible in the API and in the export.
+   */
+  async acceptSchemaOverride() {
+    this.schemaOverride = true;
+    await this.loadMapField();
   }
 
   async loadMapField() {
@@ -258,6 +287,7 @@ class Workspace {
 
     this.fieldLoading = true;
     this.fieldError = null;
+    this.fieldErrorStatus = null;
     try {
       const [hard, uncertainty] = await Promise.all([
         wantHard
@@ -265,6 +295,7 @@ class Workspace {
               layer: 'hard',
               method: this.map.method,
               datasetId: dataset.id,
+              acceptUnverifiedSchema: this.schemaOverride,
             })
           : Promise.resolve(null),
         wantUncertainty
@@ -272,6 +303,7 @@ class Workspace {
               layer: 'uncertainty',
               method: this.map.method,
               datasetId: dataset.id,
+              acceptUnverifiedSchema: this.schemaOverride,
             })
           : Promise.resolve(null),
       ]);
@@ -287,6 +319,7 @@ class Workspace {
       };
     } catch (error) {
       this.fieldError = error instanceof Error ? error.message : String(error);
+      this.fieldErrorStatus = error instanceof ClientError ? error.status : 500;
     } finally {
       this.fieldLoading = false;
     }
@@ -304,6 +337,7 @@ class Workspace {
     resolution: 'patch' | 'pixel';
     evaluationStrategy: 'random' | 'spatial';
     modelType?: 'rf' | 'lightgbm';
+    acceptUnverifiedSchema?: boolean;
   }): Promise<RunView | null> {
     if (!this.project) return null;
     this.engineError = null;

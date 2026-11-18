@@ -61,13 +61,20 @@ export const api = {
 
   mapField: (
     id: string,
-    options: { layer: 'hard' | 'uncertainty'; method: string; datasetId: string },
+    options: {
+      layer: 'hard' | 'uncertainty';
+      method: string;
+      datasetId: string;
+      /** Records an explicit "I accept an unverified band schema" override. */
+      acceptUnverifiedSchema?: boolean;
+    },
   ) => {
     const query = new URLSearchParams({
       layer: options.layer,
       method: options.method,
       dataset: options.datasetId,
     });
+    if (options.acceptUnverifiedSchema) query.set('accept_unverified_schema', 'true');
     return request<MapFieldView>(`/api/projects/${enc(id)}/map-field?${query.toString()}`);
   },
 
@@ -106,6 +113,8 @@ export const api = {
       evaluationStrategy: 'random' | 'spatial';
       modelType?: 'rf' | 'lightgbm';
       iteration?: number | null;
+      /** Records an explicit override when the rasters' bands are unnamed. */
+      acceptUnverifiedSchema?: boolean;
     },
   ) =>
     request<RunView>(`/api/projects/${enc(id)}/train`, {
@@ -136,11 +145,17 @@ export const api = {
   /** Download URL (not fetched): the browser saves the engine's GeoTIFF. */
   exportUrl: (
     id: string,
-    options: { type: 'hard' | 'probability' | 'uncertainty'; datasetId?: string; method?: string },
+    options: {
+      type: 'hard' | 'probability' | 'uncertainty';
+      datasetId?: string;
+      method?: string;
+      acceptUnverifiedSchema?: boolean;
+    },
   ) => {
     const query = new URLSearchParams({ type: options.type });
     if (options.datasetId) query.set('dataset', options.datasetId);
     if (options.method) query.set('method', options.method);
+    if (options.acceptUnverifiedSchema) query.set('accept_unverified_schema', 'true');
     return `/api/projects/${enc(id)}/exports?${query.toString()}`;
   },
 };

@@ -16,6 +16,9 @@
   const hard = $derived(workspace.field.hard as MapFieldView | null);
   const uncertainty = $derived(workspace.field.uncertainty as MapFieldView | null);
   const selected = $derived(workspace.map.selected);
+  /** Provenance of the field currently painted, or null before a first load. */
+  const provenance = $derived(hard ?? uncertainty);
+  const schemaConflict = $derived(workspace.fieldErrorStatus === 409);
 
   const layers = $derived([
     { id: 'imagery' as const, title: t('map.layer.imagery'), note: t('map.layer.imageryNote'), icon: Scan },
@@ -80,6 +83,16 @@
   function retryField() {
     void workspace.loadMapField();
   }
+
+  /**
+   * The engine refused because the raster's ordered bands cannot be proven to
+   * match the model's. Predicting anyway is a decision the operator has to make
+   * explicitly — and it gets recorded with the product, not hidden.
+   */
+  async function overrideSchema() {
+    await workspace.acceptSchemaOverride();
+    if (workspace.field && !workspace.fieldError) workspace.notify(t('map.schema.overrideRecorded'));
+  }
 </script>
 
 <PageHeading
@@ -107,10 +120,16 @@
         <div class="inline-error" role="alert">
           <X size={16} />
           <div>
-            <strong>{t('map.noModel')}</strong>
+            <strong>{schemaConflict ? t('map.schema.unverified') : t('map.noModel')}</strong>
             <span>{workspace.fieldError}</span>
           </div>
-          <button class="button small" onclick={retryField}><RotateCw size={13} /> {t('common.retry')}</button>
+          {#if schemaConflict && !workspace.schemaOverride}
+            <button class="button small" onclick={overrideSchema}>
+              {t('map.schema.accept')}
+            </button>
+          {:else}
+            <button class="button small" onclick={retryField}><RotateCw size={13} /> {t('common.retry')}</button>
+          {/if}
         </div>
       {:else if !workspace.latestRun}
         <div class="surface section-box hint-box">
@@ -237,6 +256,43 @@
         {/if}
       </section>
 
+      {#if provenance}
+        <section class="surface section-box" aria-labelledby="provenance-heading">
+          <div class="section-heading">
+            <div>
+              <h2 id="provenance-heading">{t('map.schema.title')}</h2>
+              <p>
+                {#if provenance.bandSchemaVerified}
+                  {t('map.schema.verified')}
+                {:else}
+                  {t('map.schema.unverified')}
+                {/if}
+              </p>
+            </div>
+          </div>
+          <dl class="kv-list">
+            <div><dt>{t('common.model')}</dt><dd class="ltr-numeric">#{provenance.iteration}</dd></div>
+            <div>
+              <dt>{t('map.grid')}</dt>
+              <dd>{provenance.resolution === 'pixel' ? t('map.grid.pixel') : t('map.grid.patch', { size: provenance.grid.patchSize })}</dd>
+            </div>
+            <div>
+              <dt>{t('map.studyAreaApplied')}</dt>
+              <dd>{provenance.studyAreaApplied ? t('map.studyAreaApplied') : t('map.studyAreaNotApplied')}</dd>
+            </div>
+            {#if provenance.bandSchemaReason}
+              <div><dt>{t('map.schema.reason')}</dt><dd>{provenance.bandSchemaReason}</dd></div>
+            {/if}
+          </dl>
+          {#if !provenance.bandSchemaVerified}
+            <p class="mask-note">{t('map.schema.overrideHint')}</p>
+          {/if}
+          {#if provenance.stale}
+            <p class="mask-note">{t('map.stale')}</p>
+          {/if}
+        </section>
+      {/if}
+
       <section class="surface section-box">
         <div class="section-heading"><div><h2>{t('map.dataset')}</h2><p>{dataset.name}</p></div></div>
         <dl class="kv-list">
@@ -256,9 +312,29 @@
               {/if}
             </dd>
           </div>
+          <div>
+            <dt>{t('map.studyAreaApplied')}</dt>
+            <dd>
+              {#if provenance}
+                {provenance.studyAreaApplied ? t('map.studyAreaApplied') : t('map.studyAreaNotApplied')}
+              {:else}
+                —
+              {/if}
+            </dd>
+          </div>
+          <div>
+            <dt>{t('map.schema.title')}</dt>
+            <dd>
+              {#if dataset.bandSchemaDeclared && dataset.bandNames}
+                {dataset.bandNames.join(', ')}
+              {:else}
+                {t('map.schema.undeclared')}
+              {/if}
+            </dd>
+          </div>
         </dl>
         {#if workspace.project?.studyAreaGeometry}
-          <p class="mask-note">{t('map.studyAreaNotMasked')}</p>
+          <p class="mask-note">{t('map.studyAreaMaskHint')}</p>
         {/if}
         {#if dataset.georeferenced === false && dataset.georefReason}
           <p class="mask-note">{t('map.pixelSpaceReason', { reason: t(georefKey(dataset.georefReason)) })}</p>

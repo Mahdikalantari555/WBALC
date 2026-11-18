@@ -149,6 +149,12 @@ export interface RsalDataset {
   bounds: [number, number, number, number] | null;
   created_at: string;
   size_bytes: number;
+  /**
+   * Ordered band identity the file declares (`declared: false` when it names no
+   * bands). Optional: an older engine omits it, and "unknown" must not be
+   * silently read as "declared".
+   */
+  band_schema?: RsalBandSchema | null;
   patch_grid: {
     patch_size: number;
     stride: number;
@@ -156,6 +162,16 @@ export interface RsalDataset {
     cols: number;
     total_patches: number;
   } | null;
+}
+
+export interface RsalBandSchema {
+  version: string;
+  band_count: number;
+  band_names: string[] | null;
+  sensor: string | null;
+  declared: boolean;
+  source: string;
+  digest: string | null;
 }
 
 export interface RsalScene {
@@ -294,6 +310,11 @@ export interface RsalMapField {
   min: number;
   max: number;
   stale: boolean;
+  /** Provenance of the numbers: which raster, which model, what was masked. */
+  band_schema_verified?: boolean;
+  band_schema_reason?: string | null;
+  study_area_applied?: boolean;
+  study_area_note?: string | null;
   exports: Record<string, string>;
 }
 

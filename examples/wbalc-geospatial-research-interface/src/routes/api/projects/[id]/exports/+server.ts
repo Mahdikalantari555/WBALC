@@ -5,7 +5,7 @@ import { ApiError, rsalFetch } from '$lib/server/rsal';
 const TYPES = new Set(['hard', 'probability', 'uncertainty', 'som']);
 
 /**
- * GET /api/projects/{id}/exports?type=hard|probability|uncertainty&dataset=…
+ * GET /api/projects/{id}/exports?type=hard|probability|uncertainty&dataset=…&accept_unverified_schema=true
  *
  * Streams an engine-produced GeoTIFF through the adapter. The map's "Export
  * view" uses this for the classification product, so the file the user saves is
@@ -19,6 +19,9 @@ export const GET: RequestHandler = async ({ params, url }) => {
     const query = new URLSearchParams();
     if (dataset && /^\d+$/.test(dataset)) query.set('dataset_id', dataset);
     if (type === 'uncertainty') query.set('method', url.searchParams.get('method') ?? 'entropy');
+    if (url.searchParams.get('accept_unverified_schema') === 'true') {
+      query.set('accept_unverified_schema', 'true');
+    }
     const upstream = await rsalFetch(
       `/projects/${params.id}/download/${type}?${query.toString()}`,
     );

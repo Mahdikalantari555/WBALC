@@ -348,6 +348,7 @@ class TestUnsupervisedSom:
         up = client.post(
             f"/projects/{pid}/upload",
             files={"file": ("nodata_scene.tif", buf.getvalue(), "image/tiff")},
+            data={"band_names": "blue,green,red", "sensor": "sentinel-2"},
         ).json()
 
         res = client.post(

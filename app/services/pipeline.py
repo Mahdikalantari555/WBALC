@@ -19,6 +19,7 @@ from ..storage import project_dir
 from .label_service import build_pixel_training_targets, build_training_targets
 from .raster_service import (
     RasterError,
+    check_element_budget,
     load_raster,
     make_grid,
     parse_sample_id,
@@ -26,6 +27,7 @@ from .raster_service import (
     patch_validity,
     pixel_features,
 )
+from .schema_service import SchemaConflict, compare_schemas
 from .training_service import TrainingError, save_checkpoint, train_model
 
 
@@ -40,6 +42,7 @@ async def run_training(
     test_size: float | None = None,
     params: dict | None = None,
     evaluation_strategy: str = "random",
+    accept_unverified_schema: bool = False,
 ) -> TrainingRun:
     """Train on the current labeled data and persist checkpoint + metrics."""
     from ..api.deps import project_labels
@@ -60,6 +63,7 @@ async def run_training(
 
     if resolution not in {"patch", "pixel"}:
         raise TrainingError("resolution must be 'patch' or 'pixel'")
+
     if resolution == "pixel":
         pixel_targets = build_pixel_training_targets(labels, datasets, default_dataset, project.classes)
         if not pixel_targets:
@@ -75,6 +79,13 @@ async def run_training(
             if parsed is not None and parsed[0] in datasets:
                 by_dataset.setdefault(parsed[0], []).append((parsed[1], parsed[2], target))
 
+    # All contributing rasters must describe the same ordered bands. Band counts
+    # that merely happen to match are not proof of semantic compatibility.
+    band_schema = _verify_training_schemas(
+        {ds_id: datasets[ds_id] for ds_id in sorted(by_dataset)},
+        accept_unverified_schema,
+    )
+
     def _extract() -> tuple[np.ndarray, list[int], int, np.ndarray]:
         X_parts: list[np.ndarray] = []
         y_out: list[int] = []
@@ -89,8 +100,14 @@ async def run_training(
                 for (row, col), target in items.items():
                     by_block.setdefault((row // 256, col // 256), []).append((row, col, target))
                 with rasterio.open(ds.path) as src:
-                    if src.count * src.width * src.height > settings.max_raster_elements:
-                        raise RasterError(f"Raster exceeds configured processing limit ({src.count}x{src.height}x{src.width})")
+                    # Checked before any block is read, so the refusal is cheap.
+                    check_element_budget(
+                        src.count,
+                        src.height,
+                        src.width,
+                        settings.max_raster_elements,
+                        what="pixel training extraction",
+                    )
                     bands = src.count
                     for (block_y, block_x), samples in by_block.items():
                         row0, col0 = block_y * 256, block_x * 256
@@ -170,6 +187,7 @@ async def run_training(
             stride=stride,
             bands=bands,
             resolution=resolution,
+            band_schema=band_schema,
         )
     )
 
@@ -190,12 +208,106 @@ async def run_training(
             "bands": bands,
             "feature_config": "per-pixel band values" if resolution == "pixel" else "per-band mean/std/min/max patch summary",
             "dataset_ids": sorted(by_dataset),
+            "band_schema": band_schema,
+            "band_schema_verified": bool(band_schema.get("declared")),
+            "schema_override": bool(band_schema.get("override")),
         },
     )
     session.add(run)
     await session.commit()
     await session.refresh(run)
     return run
+
+
+def _verify_training_schemas(datasets: dict[int, Dataset], accept_unverified: bool) -> dict:
+    """Require every contributing raster to share one declared band schema.
+
+    Returns the schema to record in the checkpoint. When identity cannot be
+    proven, training is refused unless the caller explicitly accepts an
+    undeclared schema — and that fact is recorded, not glossed over.
+    """
+    from .schema_service import SchemaConflict
+
+    schemas = {ds_id: (ds.band_schema or None) for ds_id, ds in datasets.items()}
+    counts = {ds_id: ds.bands for ds_id, ds in datasets.items()}
+    if len(set(counts.values())) > 1:
+        detail = ", ".join(f"dataset {ds_id}: {count} bands" for ds_id, count in counts.items())
+        raise SchemaConflict(f"Contributing rasters have different band counts ({detail})")
+
+    declared = {ds_id: schema for ds_id, schema in schemas.items() if schema and schema.get("declared")}
+    if declared:
+        digests = {schema.get("digest") for schema in declared.values()}
+        if len(digests) > 1 or len(declared) != len(schemas):
+            if not accept_unverified:
+                raise SchemaConflict(
+                    "Contributing rasters do not all declare the same ordered band schema "
+                    f"({len(declared)} of {len(schemas)} datasets declare one); refuse to "
+                    "concatenate them by band count alone. Re-upload with explicit band "
+                    "names, or retrain with accept_unverified_schema=true to record an override."
+                )
+            base = next(iter(declared.values()))
+            return {**base, "override": True, "override_reason": "mixed or undeclared schemas accepted by the caller"}
+        return {**next(iter(declared.values())), "override": False}
+
+    if not accept_unverified:
+        raise SchemaConflict(
+            "None of the contributing rasters declares band names, so the model's input "
+            "identity would be unverifiable. Re-upload with band_names (and optionally "
+            "sensor), or retrain with accept_unverified_schema=true to record an override."
+        )
+    first = next(iter(schemas.values())) or {}
+    return {
+        **(first or {}),
+        "declared": False,
+        "override": True,
+        "override_reason": "caller accepted an undeclared band schema",
+    }
+
+
+def resolve_inference_contract(
+    run: TrainingRun,
+    checkpoint: dict,
+    dataset: Dataset,
+    accept_unverified: bool,
+) -> dict:
+    """Verify that a raster's declared bands match the model's, fail closed.
+
+    Returns provenance for the response/export. Raises 409 when the identity
+    cannot be proven and the caller did not explicitly accept an unverified
+    schema; a band-count match alone is never enough.
+    """
+    if checkpoint["bands"] != dataset.bands:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Model expects {checkpoint['bands']} bands but dataset "
+                f"'{dataset.filename}' has {dataset.bands}"
+            ),
+        )
+    expected = checkpoint.get("band_schema") or (run.params or {}).get("band_schema")
+    actual = dataset.band_schema
+    verified, reason = compare_schemas(
+        expected,
+        actual,
+        expected_band_count=checkpoint["bands"],
+        actual_band_count=dataset.bands,
+    )
+    if verified:
+        return {"verified": True, "reason": reason, "override": False}
+    if not accept_unverified:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Cannot prove the selected raster carries the same ordered bands as the "
+                f"model: {reason}. Upload a raster with declared band names, or repeat the "
+                f"request with accept_unverified_schema=true to record an explicit override."
+            ),
+        )
+    return {
+        "verified": False,
+        "reason": f"{reason} (overridden by the caller)",
+        "override": True,
+    }
 
 
 def training_error_to_http(exc: TrainingError) -> HTTPException:

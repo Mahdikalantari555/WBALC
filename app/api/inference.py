@@ -38,9 +38,11 @@ from ..services.inference_service import (
     uncertainty_colors,
     validate_export_grid,
 )
-from ..services.pipeline import checkpoint_or_409
+from ..services.mask_service import StudyAreaError, study_area_mask
+from ..services.pipeline import checkpoint_or_409, resolve_inference_contract
 from ..services.raster_service import (
     RasterError,
+    check_element_budget,
     load_raster,
     make_grid,
     patch_features,
@@ -89,6 +91,7 @@ async def _run_inference(
     iteration: int | None,
     method: str = DEFAULT_UNCERTAINTY_METHOD,
     persist: bool = True,
+    accept_unverified_schema: bool = False,
 ):
     """Infer a dataset (or region) and, unless `persist` is False, export it.
 
@@ -103,11 +106,9 @@ async def _run_inference(
             detail="No trained model found; submit labels and POST /train first",
         )
     checkpoint = checkpoint_or_409(run)
-    if checkpoint["bands"] != dataset.bands:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Model expects {checkpoint['bands']} bands but dataset has {dataset.bands}",
-        )
+    # Band count alone is not identity: this also compares ordered band names and
+    # refuses to proceed on an unproven schema unless the caller said so.
+    contract = resolve_inference_contract(run, checkpoint, dataset, accept_unverified_schema)
 
     if region is None:
         region = Region(x0=0, y0=0, x1=dataset.width, y1=dataset.height)
@@ -131,11 +132,15 @@ async def _run_inference(
             h, w = region_h, region_w
             grid = make_grid(h, w, 1, 1)
             with rasterio.open(dataset.path) as src:
-                if src.count * src.width * src.height > settings.max_raster_elements:
-                    raise RasterError(
-                        f"Raster exceeds configured processing limit "
-                        f"({src.count}x{src.height}x{src.width})"
-                    )
+                # Bounded before allocating: one float32 value per class per pixel.
+                check_element_budget(
+                    src.count,
+                    src.height,
+                    src.width,
+                    settings.max_raster_elements,
+                    multiplier=len(run.classes),
+                    what="per-pixel classification",
+                )
                 k = len(run.classes)
                 probability_cube = np.zeros((k, h, w), dtype=np.float32)
                 valid = np.zeros((h, w), dtype=bool)
@@ -169,13 +174,54 @@ async def _run_inference(
     except RasterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # Study-area masking: conjunction with source validity, applied identically to
+    # hard, probability and uncertainty. Nothing is resampled or rewritten.
+    study_area_applied = False
+    study_area_note = "no study area configured"
+    if project.study_area_geometry:
+        shape = grid.shape
+        try:
+            mask, study_area_note = await anyio.to_thread.run_sync(
+                lambda: study_area_mask(
+                    project.study_area_geometry,
+                    project.study_area_crs,
+                    dataset.crs,
+                    dataset.transform,
+                    region=(region.x0, region.y0, region_w, region_h),
+                    height=region_h,
+                    width=region_w,
+                    shape=shape,
+                )
+            )
+        except StudyAreaError as exc:
+            raise HTTPException(status_code=422, detail=f"Study area cannot be applied: {exc}") from exc
+        valid = valid.reshape(shape) & mask
+        # hard/unc are already grid-shaped (rows, cols); prob is (classes, rows, cols).
+        hard = np.where(valid, hard, 0)
+        prob = prob * valid[None, :, :]
+        unc = np.where(valid, unc, 0.0)
+        study_area_applied = True
+
+    contract_meta = {
+        "band_schema_verified": contract["verified"],
+        "band_schema_reason": contract["reason"],
+        "schema_override": contract["override"],
+    }
+
     meta = grid_metadata(
         grid, region.x0, region.y0, stride, include_cells=resolution != "pixel"
     )
     meta["resolution"] = "pixel" if resolution == "pixel" else "patch-cells"
     meta["method"] = method
+    meta.update(contract_meta)
+    meta["training_run_id"] = run.id
+    meta["study_area_applied"] = study_area_applied
+    meta["study_area_note"] = study_area_note
     if not persist:
-        return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution
+        return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution, contract_meta, {
+            "applied": study_area_applied,
+            "note": study_area_note,
+        }
 
     # A classified raster without georeferencing is not usable data, and writing
     # an identity transform would present a made-up location. Refuse explicitly.
@@ -260,7 +306,10 @@ async def _run_inference(
             )
         )
     await session.commit()
-    return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution
+    return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution, contract_meta, {
+        "applied": study_area_applied,
+        "note": study_area_note,
+    }
 
 
 @router.post("/predict", response_model=PredictResponse)
@@ -280,9 +329,16 @@ async def predict(
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, payload.dataset_id)
     (
-        run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution
+        run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution, contract, mask
     ) = await _run_inference(
-        session, settings, project, dataset, payload.region, payload.iteration, method
+        session,
+        settings,
+        project,
+        dataset,
+        payload.region,
+        payload.iteration,
+        method,
+        accept_unverified_schema=payload.accept_unverified_schema,
     )
     shape = grid.shape
     valid_grid = valid.reshape(shape)
@@ -315,6 +371,12 @@ async def predict(
         uncertainty_map=unc_json if payload.include_maps else None,
         uncertainty_method=method if payload.include_maps else None,
         valid_map=valid_grid.tolist() if payload.include_maps else None,
+        training_run_id=run.id,
+        band_schema_verified=contract["band_schema_verified"],
+        band_schema_reason=contract["band_schema_reason"],
+        schema_override=contract["schema_override"],
+        study_area_applied=mask["applied"],
+        study_area_note=mask["note"],
         exports={
             "hard": f"/projects/{project.id}/download/hard",
             "probability": f"/projects/{project.id}/download/probability",
@@ -332,6 +394,7 @@ async def predict_map(
     method: str = Query(default=DEFAULT_UNCERTAINTY_METHOD),
     dataset_id: int | None = Query(default=None),
     iteration: int | None = Query(default=None, ge=0),
+    accept_unverified_schema: bool = Query(default=False),
 ):
     """One grid-aligned field for the map layers.
 
@@ -343,9 +406,17 @@ async def predict_map(
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
     (
-        run, region, grid, valid, hard, _prob, unc, patch_size, stride, resolution
+        run, region, grid, valid, hard, _prob, unc, patch_size, stride, resolution, contract, mask
     ) = await _run_inference(
-        session, settings, project, dataset, None, iteration, method, persist=False
+        session,
+        settings,
+        project,
+        dataset,
+        None,
+        iteration,
+        method,
+        persist=False,
+        accept_unverified_schema=accept_unverified_schema,
     )
     latest = await latest_run(session, project.id)
     shape = grid.shape
@@ -388,6 +459,10 @@ async def predict_map(
         min=vmin,
         max=vmax,
         stale=bool(latest is not None and latest.id != run.id),
+        band_schema_verified=contract["band_schema_verified"],
+        band_schema_reason=contract["band_schema_reason"],
+        study_area_applied=mask["applied"],
+        study_area_note=mask["note"],
         exports={
             "hard": f"/projects/{project.id}/download/hard?dataset_id={dataset.id}",
             "probability": f"/projects/{project.id}/download/probability?dataset_id={dataset.id}",
@@ -429,6 +504,7 @@ async def download(
     settings: SettingsDep,
     dataset_id: int | None = Query(default=None),
     method: str = Query(default=DEFAULT_UNCERTAINTY_METHOD),
+    accept_unverified_schema: bool = Query(default=False),
 ):
     """Download the latest GeoTIFF export of the given type.
 
@@ -472,7 +548,16 @@ async def download(
             # is the only way to hand back the model the user just trained.
             # `_latest_export` filters by method so uncertainty artifacts of a
             # different method are never substituted.
-            await _run_inference(session, settings, project, dataset, None, None, method)
+            await _run_inference(
+                session,
+                settings,
+                project,
+                dataset,
+                None,
+                None,
+                method,
+                accept_unverified_schema=accept_unverified_schema,
+            )
             export = await _latest_export(session, project_id, etype, dataset.id, method)
             if export is None:
                 raise HTTPException(status_code=500, detail="Export failed")
@@ -506,6 +591,7 @@ async def download_png(
     dataset_id: int | None = Query(default=None),
     method: str = Query(default=DEFAULT_UNCERTAINTY_METHOD),
     scale: int = Query(default=8, ge=1, le=32, description="Pixels per grid cell"),
+    accept_unverified_schema: bool = Query(default=False),
 ):
     """PNG snapshot of a layer, painted with the same colours the map uses."""
     if export_type not in ("hard", "uncertainty"):
@@ -518,9 +604,17 @@ async def download_png(
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
     (
-        run, _region, grid, valid, hard, _prob, unc, _patch, _stride, _res
+        run, _region, grid, valid, hard, _prob, unc, _patch, _stride, _res, _contract, _mask
     ) = await _run_inference(
-        session, settings, project, dataset, None, None, method, persist=False
+        session,
+        settings,
+        project,
+        dataset,
+        None,
+        None,
+        method,
+        persist=False,
+        accept_unverified_schema=accept_unverified_schema,
     )
     palette = class_colors(len(run.classes))
     shape = grid.shape
@@ -568,6 +662,7 @@ async def download_csv(
     settings: SettingsDep,
     dataset_id: int | None = Query(default=None),
     method: str = Query(default=DEFAULT_UNCERTAINTY_METHOD),
+    accept_unverified_schema: bool = Query(default=False),
 ):
     """Per-cell table: row, col, pixel window, class, uncertainty, validity."""
     if export_type not in ("hard", "uncertainty"):
@@ -580,9 +675,17 @@ async def download_csv(
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
     (
-        run, region, grid, valid, hard, _prob, unc, _patch, _stride, _res
+        run, region, grid, valid, hard, _prob, unc, _patch, _stride, _res, _contract, _mask
     ) = await _run_inference(
-        session, settings, project, dataset, None, None, method, persist=False
+        session,
+        settings,
+        project,
+        dataset,
+        None,
+        None,
+        method,
+        persist=False,
+        accept_unverified_schema=accept_unverified_schema,
     )
     shape = grid.shape
     valid_grid = valid.reshape(shape)

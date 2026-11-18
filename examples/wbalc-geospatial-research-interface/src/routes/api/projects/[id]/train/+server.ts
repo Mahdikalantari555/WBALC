@@ -8,6 +8,7 @@ interface Body {
   evaluationStrategy?: 'random' | 'spatial';
   modelType?: 'rf' | 'lightgbm';
   iteration?: number | null;
+  acceptUnverifiedSchema?: boolean;
 }
 
 /**
@@ -21,6 +22,10 @@ interface Body {
  * The evaluation split (`random` vs `spatial`) is likewise explicit: a random
  * holdout over neighbouring patches is optimistic, and the score is meaningless
  * without knowing which protocol produced it.
+ *
+ * `acceptUnverifiedSchema` is the recorded override for rasters whose ordered
+ * bands are unnamed: the engine refuses to concatenate them by band count alone,
+ * so the caller has to say yes explicitly (422 otherwise).
  */
 export const POST: RequestHandler = async ({ params, request }) => {
   try {
@@ -40,6 +45,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
       evaluation_strategy: body.evaluationStrategy ?? 'random',
       iteration: body.iteration ?? null,
       params: {},
+      accept_unverified_schema: Boolean(body.acceptUnverifiedSchema),
     });
     return ok(toRun(run), { status: 201 });
   } catch (error) {

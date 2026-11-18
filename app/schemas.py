@@ -101,6 +101,12 @@ class ProjectUpdate(BaseModel):
     def study_area_valid(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         return _validate_study_geometry(value)
 
+    @model_validator(mode="after")
+    def geometry_requires_crs(self):
+        if self.study_area_geometry is not None and not self.study_area_crs:
+            raise ValueError("study_area_crs is required when study_area_geometry is provided")
+        return self
+
     @field_validator("classes")
     @classmethod
     def classes_valid(cls, v: list[str] | None) -> list[str] | None:
@@ -139,6 +145,9 @@ class DatasetOut(BaseModel):
     dtype: str
     nodata: float | None
     bounds: list[float] | None
+    # Ordered band identity as recorded at upload; `declared` is False when the
+    # file carried no usable names, so callers must not read it as compatibility.
+    band_schema: dict | None = None
     created_at: datetime
     # Computed metadata for clients (frontend rendering / progress display).
     size_bytes: int = 0
@@ -321,6 +330,9 @@ class TrainRequest(BaseModel):
     iteration: int | None = Field(default=None, ge=0)
     test_size: float | None = Field(default=None, gt=0.0, lt=1.0)
     params: dict[str, Any] = Field(default_factory=dict)
+    # Combining datasets whose band identity cannot be proven equivalent is
+    # refused unless the caller explicitly accepts an unverified schema.
+    accept_unverified_schema: bool = False
 
 
 class MetricsOut(BaseModel):
@@ -374,10 +386,14 @@ class Region(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    dataset_id: int | None = None
+    # Required: pixel inference must never fall back to "the newest upload".
+    dataset_id: int = Field(ge=1)
     region: Region | None = None
     iteration: int | None = Field(default=None, ge=0)
     include_maps: bool = True
+    # Deliberate, recorded acknowledgement that the raster's band identity could
+    # not be proven to match the model's. Required when verification fails.
+    accept_unverified_schema: bool = False
 
 
 class PredictResponse(BaseModel):
@@ -398,6 +414,13 @@ class PredictResponse(BaseModel):
     uncertainty_map: list[list[float | None]] | None = None  # per-patch, 0..1
     uncertainty_method: str | None = None
     valid_map: list[list[bool]] | None = None  # False = patch has no valid pixels
+    # Provenance: what produced these numbers, and which masks were applied.
+    training_run_id: int | None = None
+    band_schema_verified: bool = False
+    band_schema_reason: str | None = None
+    schema_override: bool = False
+    study_area_applied: bool = False
+    study_area_note: str | None = None
     exports: dict[str, str]  # type -> download URL
 
 
@@ -430,6 +453,10 @@ class MapFieldOut(BaseModel):
     min: float | None = None
     max: float | None = None
     stale: bool = False
+    band_schema_verified: bool = False
+    band_schema_reason: str | None = None
+    study_area_applied: bool = False
+    study_area_note: str | None = None
     exports: dict[str, str]
 
 

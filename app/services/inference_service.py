@@ -254,6 +254,17 @@ def _base_tags(classes: list[str], grid: dict | None, resolution: str | None) ->
     tags = {"classes": json.dumps(classes)}
     if grid is not None:
         tags["grid"] = json.dumps(grid)
+        # Provenance a downstream consumer can read without parsing the grid blob.
+        for key in (
+            "study_area_applied",
+            "study_area_note",
+            "band_schema_verified",
+            "band_schema_reason",
+            "schema_override",
+            "training_run_id",
+        ):
+            if key in grid and grid[key] is not None:
+                tags[key] = str(grid[key]).lower() if isinstance(grid[key], bool) else str(grid[key])
     if resolution is not None:
         tags["resolution"] = resolution
     return tags

@@ -175,6 +175,7 @@ def save_checkpoint(
     stride: int,
     bands: int,
     resolution: str = "patch",
+    band_schema: dict | None = None,
 ) -> None:
     if resolution not in {"patch", "pixel"}:
         raise TrainingError("resolution must be 'patch' or 'pixel'")
@@ -196,6 +197,8 @@ def save_checkpoint(
                 "bands": bands,
                 "resolution": resolution,
                 "feature_schema": feature_schema,
+                # Ordered band identity (or an explicit, recorded absence of one).
+                "band_schema": band_schema,
                 "n_features": feature_count(bands, feature_schema),
                 "format": CHECKPOINT_FORMAT,
             },

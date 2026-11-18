@@ -5,14 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 
 import anyio
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import delete as sa_delete, select
 
 from ..config import Settings
 from ..models import Dataset, Export, Label
 from ..schemas import DatasetOut
-from ..services.raster_service import RasterError, extract_metadata, make_grid
+from ..services.raster_service import (
+    RasterError,
+    extract_band_identity,
+    extract_metadata,
+    make_grid,
+)
+from ..services.schema_service import build_band_schema
 from ..storage import project_dir, unique_name
 from .deps import SessionDep, SettingsDep, get_dataset, get_project
 
@@ -41,8 +47,19 @@ def dataset_out(dataset: Dataset, settings: Settings) -> DatasetOut:
 
 @router.post("/upload", response_model=DatasetOut, status_code=201)
 async def upload_geotiff(
-    project_id: int, file: UploadFile, session: SessionDep, settings: SettingsDep
+    project_id: int,
+    file: UploadFile,
+    session: SessionDep,
+    settings: SettingsDep,
+    band_names: str | None = Form(default=None),
+    sensor: str | None = Form(default=None),
 ) -> Dataset:
+    """Store one GeoTIFF and record the band identity it declares.
+
+    `band_names` (comma-separated) and `sensor` are optional *explicit* caller
+    declarations for files whose bands are unnamed; without them the dataset is
+    stored as "schema undeclared" and inference against it requires an override.
+    """
     await get_project(session, project_id)
 
     filename = file.filename or "upload.tif"
@@ -76,10 +93,38 @@ async def upload_geotiff(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    declared_names = None
+    source = "raster-metadata"
+    if band_names and band_names.strip():
+        declared_names = [part.strip() for part in band_names.split(",")]
+        if len(declared_names) != meta["bands"]:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"band_names declares {len(declared_names)} names but the raster has "
+                    f"{meta['bands']} bands"
+                ),
+            )
+        source = "request"
+    else:
+        try:
+            identity = await anyio.to_thread.run_sync(extract_band_identity, dest)
+        except RasterError as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        declared_names = identity["band_names"]
+
     dataset = Dataset(
         project_id=project_id,
         filename=filename,
         path=str(dest),
+        band_schema=build_band_schema(
+            band_count=meta["bands"],
+            band_names=declared_names,
+            sensor=(sensor.strip() if sensor and sensor.strip() else None),
+            source=source,
+        ),
         **meta,
     )
     session.add(dataset)

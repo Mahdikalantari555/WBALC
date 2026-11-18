@@ -94,6 +94,9 @@ class Dataset(Base):
     dtype: Mapped[str] = mapped_column(String(50))
     nodata: Mapped[float | None] = mapped_column(Float, nullable=True)
     bounds: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Ordered band identity (names/sensor/declared flag + digest). NULL means the
+    # raster carries no declarable identity: never backfilled with guesses.
+    band_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="datasets")

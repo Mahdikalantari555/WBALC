@@ -6,8 +6,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .v001_scene_foundation import upgrade as upgrade_v1
+from .v002_dataset_band_schema import upgrade as upgrade_v2
 
-MIGRATIONS = [(1, upgrade_v1)]
+MIGRATIONS = [(1, upgrade_v1), (2, upgrade_v2)]
 
 
 async def run_migrations(connection: AsyncConnection) -> None:

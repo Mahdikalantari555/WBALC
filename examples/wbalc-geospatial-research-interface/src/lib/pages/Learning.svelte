@@ -34,6 +34,9 @@
   let trainResolution = $state<'patch' | 'pixel'>('patch');
   let trainProtocol = $state<'random' | 'spatial'>('random');
   let trainModel = $state<'rf' | 'lightgbm'>('rf');
+  /** Set when the engine refused training because the band schemas conflict. */
+  let schemaRefused = $state(false);
+  let acceptUnverified = $state(false);
 
   const classes = $derived(workspace.project?.classes ?? []);
   const batch = $derived(workspace.review.batch);
@@ -167,14 +170,24 @@
    */
   async function train() {
     if (!workspace.project) return;
+    schemaRefused = false;
     const run = await workspace.train({
       resolution: trainResolution,
       evaluationStrategy: trainProtocol,
       modelType: trainModel,
+      acceptUnverifiedSchema: acceptUnverified,
     });
     if (run) {
-      workspace.notify(t('learning.train.trained', { iteration: run.iteration }));
+      workspace.notify(
+        acceptUnverified
+          ? t('learning.train.schemaOverridden')
+          : t('learning.train.trained', { iteration: run.iteration }),
+      );
       void workspace.reload();
+    } else if (workspace.engineError) {
+      // 422 = the contributing rasters do not share one declared band schema.
+      // Say so, and offer the same explicit override the API requires.
+      schemaRefused = true;
     }
   }
 
@@ -313,6 +326,10 @@
       <option value="lightgbm">LightGBM</option>
     </select>
   </label>
+  <label class="field inline-field checkbox-field" title={t('learning.train.schemaHint')}>
+    <input type="checkbox" bind:checked={acceptUnverified} />
+    {t('learning.train.acceptUnverified')}
+  </label>
   <button class="button primary" onclick={train} disabled={training || !workspace.labels.length}>
     {training ? t('learning.train.running') : t('learning.train.run')}
   </button>
@@ -324,7 +341,11 @@
 {#if workspace.engineError}
   <div class="inline-error" role="alert">
     <TriangleAlert size={16} />
-    <div><strong>{t('learning.train.failed')}</strong><span>{workspace.engineError}</span></div>
+    <div>
+      <strong>{schemaRefused ? t('learning.train.schemaRefused') : t('learning.train.failed')}</strong>
+      <span>{workspace.engineError}</span>
+      {#if schemaRefused}<span>{t('learning.train.schemaHint')}</span>{/if}
+    </div>
   </div>
 {/if}
 {#if requestError}
@@ -592,6 +613,7 @@
   .inline-field.compact { min-width: min(150px, 100%); }
   .train-bar { border-color: #2f4c5c; }
   .train-bar .button { margin-bottom: 0; }
+  .checkbox-field { flex-direction: row; align-items: center; gap: 6px; font-size: 11px; }
   .import-hint { color: var(--faint); font-size: 10.5px; margin-bottom: 9px; }
   .file-button { position: relative; overflow: hidden; }
   .file-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }

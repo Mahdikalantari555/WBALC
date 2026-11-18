@@ -19,7 +19,7 @@ def test_pixel_rf_training_predict_and_export_preserve_reference_grid(client, pr
     })
     assert trained.status_code == 201, trained.text
     assert trained.json()["n_samples"] == 64
-    prediction = client.post(f"/projects/{pid}/predict", json={})
+    prediction = client.post(f"/projects/{pid}/predict", json={"dataset_id": dataset["id"]})
     assert prediction.status_code == 200, prediction.text
     body = prediction.json()
     assert body["grid_shape"] == [64, 64]
@@ -39,7 +39,9 @@ def test_pixel_rf_training_predict_and_export_preserve_reference_grid(client, pr
         assert out.bounds == ref_bounds
         assert set(np.unique(out.read(1))) <= {0, 1}
     region = {"x0": 2, "y0": 3, "x1": 17, "y1": 21}
-    predicted_region = client.post(f"/projects/{pid}/predict", json={"region": region})
+    predicted_region = client.post(
+        f"/projects/{pid}/predict", json={"dataset_id": dataset["id"], "region": region}
+    )
     assert predicted_region.status_code == 200, predicted_region.text
     regional_file = client.get(f"/projects/{pid}/download/hard")
     with rasterio.open(io.BytesIO(regional_file.content)) as out:
@@ -67,7 +69,7 @@ def test_pixel_lightgbm_training_predicts_source_grid(client, project, dataset):
         "params": {"n_estimators": 5, "min_child_samples": 1},
     })
     assert trained.status_code == 201, trained.text
-    pred = client.post(f"/projects/{project['id']}/predict", json={})
+    pred = client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]})
     assert pred.status_code == 200, pred.text
     assert pred.json()["grid_shape"] == [64, 64]
 
@@ -100,7 +102,11 @@ def test_pixel_mode_partial_edges_nodata_non_square_pixels_and_crs(client, proje
                       crs="EPSG:4326", transform=Affine(0.01, 0.002, 12, 0.003, -0.02, 55), nodata=-9999) as ds:
             ds.write(data)
         payload = mem.read()
-    upload = client.post(f"/projects/{project['id']}/upload", files={"file": ("edge.tif", payload, "image/tiff")})
+    upload = client.post(
+        f"/projects/{project['id']}/upload",
+        files={"file": ("edge.tif", payload, "image/tiff")},
+        data={"band_names": "red,nir"},
+    )
     assert upload.status_code == 201, upload.text
     dsid = upload.json()["id"]
     labels = [point_label(col, row, "water" if col < 5 else "vegetation", dataset_id=dsid, sample_resolution="pixel")

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from ..models import TrainingRun
 from ..schemas import MetricsOut, TrainRequest, TrainResponse
 from ..services.pipeline import run_training
+from ..services.schema_service import SchemaConflict
 from ..services.training_service import TrainingError
 from .deps import SessionDep, SettingsDep, get_project, latest_run
 
@@ -56,7 +57,12 @@ async def train(project_id: int, payload: TrainRequest, session: SessionDep, set
             iteration=payload.iteration,
             test_size=payload.test_size,
             params=payload.params,
+            accept_unverified_schema=payload.accept_unverified_schema,
         )
+    except SchemaConflict as exc:
+        # A schema conflict is a client-fixable configuration error, not a
+        # "not enough data" condition, so it gets its own status.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except TrainingError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return TrainResponse(

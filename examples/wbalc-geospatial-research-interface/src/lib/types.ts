@@ -45,6 +45,10 @@ export interface DatasetView {
   /** False when the adapter has no usable CRS/affine: render in pixel space. */
   georeferenced: boolean;
   georefReason: GeorefReason | null;
+  /** Ordered band names the file declares; null when it declares none. */
+  bandNames: string[] | null;
+  bandSchemaDeclared: boolean;
+  sensor: string | null;
   patchGrid: {
     patchSize: number;
     stride: number;
@@ -187,6 +191,11 @@ export interface MapFieldView {
   min: number;
   max: number;
   stale: boolean;
+  /** True only when the reference raster provably carries the model's bands. */
+  bandSchemaVerified: boolean;
+  bandSchemaReason: string | null;
+  studyAreaApplied: boolean;
+  studyAreaNote: string | null;
 }
 
 export interface LabelImportResult {

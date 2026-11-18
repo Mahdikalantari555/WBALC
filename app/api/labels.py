@@ -9,6 +9,7 @@ from ..models import Label
 from ..schemas import LabelBatchCreate, LabelCreate, LabelOut
 from ..services.label_service import derive_sample_id, latest_labels
 from ..services.pipeline import run_training
+from ..services.schema_service import SchemaConflict
 from ..services.raster_service import make_grid, map_to_pixel
 from ..services.training_service import TrainingError
 from .deps import (
@@ -165,7 +166,7 @@ async def submit_labels(
         try:
             run = await run_training(session, settings, project, model_type=train_type)
             result["training"] = _train_response(run).model_dump()
-        except TrainingError as exc:
+        except (TrainingError, SchemaConflict) as exc:
             result["training_error"] = str(exc)
     return result
 

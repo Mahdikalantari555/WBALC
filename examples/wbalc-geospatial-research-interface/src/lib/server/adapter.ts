@@ -77,6 +77,9 @@ export function toDataset(dataset: RsalDataset): DatasetView {
     createdAt: dataset.created_at,
     georeferenced: assessment.mode === 'map',
     georefReason: assessment.reason,
+    bandNames: dataset.band_schema?.band_names ?? null,
+    bandSchemaDeclared: Boolean(dataset.band_schema?.declared),
+    sensor: dataset.band_schema?.sensor ?? null,
     patchGrid: dataset.patch_grid
       ? {
           patchSize: dataset.patch_grid.patch_size,
@@ -279,5 +282,11 @@ export function toMapField(field: RsalMapField): MapFieldView {
     min: field.min,
     max: field.max,
     stale: field.stale,
+    // An older engine omits these; "unverified" is the honest default because
+    // the adapter cannot claim a schema match the engine never reported.
+    bandSchemaVerified: Boolean(field.band_schema_verified),
+    bandSchemaReason: field.band_schema_reason ?? null,
+    studyAreaApplied: Boolean(field.study_area_applied),
+    studyAreaNote: field.study_area_note ?? null,
   };
 }

@@ -17,7 +17,7 @@ def train_rf(client, pid):
 class TestInference:
     def test_predict_full_image(self, client, project, dataset, labeled):
         train_rf(client, project["id"])
-        resp = client.post(f"/projects/{project['id']}/predict", json={})
+        resp = client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["grid_shape"] == [8, 8]
@@ -36,7 +36,7 @@ class TestInference:
         train_rf(client, project["id"])
         resp = client.post(
             f"/projects/{project['id']}/predict",
-            json={"region": {"x0": 32, "y0": 0, "x1": 64, "y1": 32}},
+            json={"dataset_id": dataset["id"], "region": {"x0": 32, "y0": 0, "x1": 64, "y1": 32}},
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -54,11 +54,11 @@ class TestInference:
         assert resp.status_code == 422
 
     def test_predict_without_model_409(self, client, project, dataset):
-        assert client.post(f"/projects/{project['id']}/predict", json={}).status_code == 409
+        assert client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]}).status_code == 409
 
     def test_predict_no_maps_option(self, client, project, dataset, labeled):
         train_rf(client, project["id"])
-        resp = client.post(f"/projects/{project['id']}/predict", json={"include_maps": False})
+        resp = client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"], "include_maps": False})
         assert resp.status_code == 200
         body = resp.json()
         assert body["hard_map"] is None
@@ -66,7 +66,7 @@ class TestInference:
 
     def test_download_hard_geotiff(self, client, project, dataset, labeled):
         train_rf(client, project["id"])
-        client.post(f"/projects/{project['id']}/predict", json={})
+        client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]})
         resp = client.get(f"/projects/{project['id']}/download/hard")
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("image/tiff")
@@ -85,7 +85,7 @@ class TestInference:
 
     def test_download_probability_geotiff(self, client, project, dataset, labeled):
         train_rf(client, project["id"])
-        client.post(f"/projects/{project['id']}/predict", json={})
+        client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]})
         resp = client.get(f"/projects/{project['id']}/download/probability")
         assert resp.status_code == 200
         with rasterio.open(io.BytesIO(resp.content)) as ds:
@@ -113,7 +113,7 @@ class TestInference:
 
     def test_exports_listing(self, client, project, dataset, labeled):
         train_rf(client, project["id"])
-        client.post(f"/projects/{project['id']}/predict", json={})
+        client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]})
         resp = client.get(f"/projects/{project['id']}/exports")
         assert resp.status_code == 200
         types = {e["type"] for e in resp.json()}

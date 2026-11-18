@@ -117,8 +117,10 @@ any future pixel-wise operation; no scene is assumed to be aligned.
 
 The database migration runner applies versioned additive migrations at startup.
 Migration 1 adds project study-area/classification fields and creates the scenes
-table while preserving existing RSAL project/dataset rows. It does not invent
-scene provenance for legacy datasets.
+table; migration 2 adds `datasets.band_schema` (nullable JSON). Both are additive,
+idempotent and preserve existing RSAL project/dataset rows. A `NULL` band schema
+means "undeclared": band identity is never backfilled from filenames or a sensor
+default, so legacy datasets keep requiring an explicit override to be used.
 
 ## The active learning loop
 
@@ -258,8 +260,8 @@ behaviour but silently reduces the pixel-mode training set. The model then predi
 every source pixel directly; this is not an upsampled patch map. Their hard,
 probability and uncertainty GeoTIFFs use the source pixel/window affine and the
 region dimensions, and a pixel that is nodata in any band is nodata in the output.
-Pixel mode requires the same band count at inference and remains subject to the
-synchronous whole-raster memory guard.
+Pixel mode remains subject to the synchronous whole-raster memory guard described
+under *Resource bounds* below.
 
 Every response that describes a map states its `resolution` (`pixel` or `patch`),
 so a patch-cell map is never presented as pixel-level classification. Patch-mode
@@ -286,6 +288,65 @@ raster are rejected. Polygon labels must be closed finite rings and overlap the
 dataset. `LICENSE` applies to repository code only; third-party components keep
 their own licenses, which require a separate redistribution review.
 
+## Band identity and the study-area mask
+
+Band *count* is not band *identity*. A four-band stack can be blue/green/red/nir in
+one order and something else entirely in another, so the engine refuses to treat
+equal widths as proof of compatibility:
+
+- **Declaring a schema.** Uploads accept `band_names` (comma-separated, one per
+  band) and `sensor` as form fields. Named bands in the file's metadata
+  (`descriptions`, `NAME`/`BAND_NAME` tags) are used otherwise. A schema is
+  `declared` only when *every* band is named; a partially named stack is
+  undeclared, and a band-count match alone never verifies anything.
+- **Training.** All contributing rasters must share one declared, identically
+  ordered schema. Mixed or unnamed inputs are refused with **422**; passing
+  `"accept_unverified_schema": true` records `schema_override` on the run instead.
+- **Inference.** `POST /predict` requires an explicit `dataset_id` — there is no
+  "latest dataset" fallback — and validates project ownership. If the reference
+  raster cannot be proven to carry the model's ordered bands, the request fails
+  with **409** and a reason (`ordered band names differ (...)`, `the selected
+  raster's bands are unnamed`, `band schema digests differ`, ...). Repeat with
+  `?accept_unverified_schema=true` to record an explicit override. Every response
+  and GeoTIFF carries `band_schema_verified`, `band_schema_reason` and
+  `schema_override`.
+- **Study area.** When a project has a `study_area_geometry`, predictions and all
+  exports are valid only where *both* the pixel centre is inside the polygon and
+  every source band is valid. The geometry is transformed (vector coordinates
+  only, via `rasterio.warp.transform`) from the project CRS into the raster CRS —
+  never a raster reprojection. Missing CRS or a failed operation is a **422**
+  (`Study area cannot be applied: ...`). NoData is written outside the mask in
+  hard, probability and uncertainty alike, and the products carry
+  `study_area_applied`. Patch-cell products are masked at cell resolution and say
+  so. The source GeoTIFF is never modified.
+
+## Resource bounds
+
+`MAX_RASTER_ELEMENTS` (default 250,000,000) is a **count of float32 elements the
+engine would have to hold at once**, not a throughput promise and not a file-size
+limit. It is checked *before* the array is allocated, and the refusal names the
+numbers, the setting and the ways out (`region` windows, patch resolution, or
+raising the limit knowingly):
+
+```
+per-pixel classification needs 4x10000x10000x3 = 1,200,000,000 float32 elements,
+over the configured limit of 250,000,000 (MAX_RASTER_ELEMENTS). The extra factor is
+the number of class-probability bands produced per pixel. Nothing was allocated.
+Predict a window with `region`, use patch resolution instead of per-pixel
+inference, or raise MAX_RASTER_ELEMENTS knowingly.
+```
+
+| Path | What is held in memory | Counted factor |
+| --- | --- | --- |
+| `GET /download/*` / patch inference | whole source cube (bands × H × W) | ×1 |
+| Per-pixel inference | source blocks + full probability cube | × classes |
+| Pixel training extraction | 256×256 blocks only (never the full cube) | ×1, checked first |
+| SOM / `/query` | whole source cube | ×1 |
+
+Uploads are separately capped by `MAX_UPLOAD_BYTES` (512 MiB). Per-pixel inference
+is *not* out-of-core: blocks are read incrementally, but the probability cube for
+the requested window is materialised, so the limit scales with classes.
+
 ## Known limitations
 
 - **Patch-mode rasters are cell maps, not pixel classifications.** Each cell's
@@ -296,7 +357,8 @@ their own licenses, which require a separate redistribution review.
   overlay are north-up pictures of the cell grid. There is no resampling path.
 - **No streaming inference.** Pixel inference reads the source in 256×256 blocks
   but keeps the full probability cube in memory; `MAX_RASTER_ELEMENTS` is the only
-  guard, and training is synchronous.
+  guard, and training is synchronous. See *Resource bounds* for exactly what is
+  counted.
 - **Spatial evaluation is block-based** (256 px boxes) and is not buffered against
   boundary leakage.
 - **The review queue lives in the browser** (`localStorage`, zustand persist).

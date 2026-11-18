@@ -155,8 +155,12 @@ def main() -> None:
         # -------------------------------------------------------------- upload
         # 256x256 -> an 8x8 patch grid, so a 20-sample diversity batch is real.
         tif = make_geotiff(256, 256)
+        # Declared band names: the engine refuses to train or predict on rasters
+        # whose ordered bands it cannot identify without an explicit override.
         r = direct.post(
-            f"/projects/{pid}/upload", files={"file": ("smoke.tif", tif, "image/tiff")}
+            f"/projects/{pid}/upload",
+            files={"file": ("smoke.tif", tif, "image/tiff")},
+            data={"band_names": "blue,green,red,nir", "sensor": "sentinel-2"},
         )
         check("upload GeoTIFF (engine)", r.status_code == 201, str(r.status_code))
         did = r.json()["id"]
@@ -167,6 +171,13 @@ def main() -> None:
         dataset = datasets[0]
         check("dataset georeferenced + bounds", dataset["georeferenced"] is True and dataset["bounds"] is not None)
         check("dataset url is adapter-relative", dataset["url"] == f"/api/projects/{pid}/datasets/{did}/file")
+        check(
+            "dataset reports its declared band schema",
+            dataset["bandSchemaDeclared"] is True
+            and dataset["bandNames"] == ["blue", "green", "red", "nir"]
+            and dataset["sensor"] == "sentinel-2",
+            str(dataset.get("bandNames")),
+        )
 
         r = client.get(dataset["url"])
         check(
@@ -300,8 +311,51 @@ def main() -> None:
             and len(field["values"]) == field["grid"]["rows"]
             and len(field["values"][0]) == field["grid"]["cols"],
         )
+        check(
+            "hard field reports provenance",
+            field["bandSchemaVerified"] is True
+            and field["studyAreaApplied"] is False
+            and field["trainingRunId"] == str(trained["id"]),
+            f"verified={field.get('bandSchemaVerified')}",
+        )
         r = client.get(f"/api/projects/{pid}/map-field?layer=uncertainty&method=entropy&dataset={did}")
         check("uncertainty map field", r.status_code == 200 and r.json()["layer"] == "uncertainty")
+
+        # ------------------------------------- band-schema refusal + override
+        # A raster that names no bands cannot be proven to carry the model's
+        # ordered bands. The engine must refuse, the adapter must relay the
+        # refusal, and only an explicit override may produce a product.
+        r = direct.post(
+            f"/projects/{pid}/upload",
+            files={"file": ("unnamed.tif", make_geotiff(256, 256), "image/tiff")},
+        )
+        check("upload without declared bands", r.status_code == 201, r.text[:120])
+        unnamed = r.json()["id"]
+        r = client.get(f"/api/projects/{pid}/datasets")
+        undeclared = next(item for item in r.json() if item["id"] == str(unnamed))
+        check(
+            "undeclared raster is reported as undeclared, not guessed",
+            undeclared["bandSchemaDeclared"] is False
+            and undeclared["bandNames"] is None
+            and undeclared["sensor"] is None,
+            str(undeclared.get("bandNames")),
+        )
+        r = client.get(f"/api/projects/{pid}/map-field?layer=hard&dataset={unnamed}")
+        check(
+            "undeclared bands -> refusal relayed by the adapter",
+            r.status_code == 409 and "accept_unverified_schema" in r.json()["message"],
+            f"{r.status_code} {r.json().get('message', '')[:70]}",
+        )
+        # The override records the operator's decision; it cannot invent a
+        # schema. The product is still produced, and still flagged unverified.
+        r = client.get(
+            f"/api/projects/{pid}/map-field?layer=hard&dataset={unnamed}&accept_unverified_schema=true"
+        )
+        check(
+            "explicit override produces a product flagged unverified",
+            r.status_code == 200 and r.json()["bandSchemaVerified"] is False,
+            f"{r.status_code} body={r.text[:120]}",
+        )
 
         # ------------------------------------------------------------ exports
         r = client.get(f"/api/projects/{pid}/exports?type=hard&dataset={did}")

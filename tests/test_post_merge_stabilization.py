@@ -64,8 +64,15 @@ def _scene(h: int = 64, w: int = 64, collar: int = 0, nodata: float | None = Non
     return _geotiff(data, from_origin(500000, 4649776, 10, 10), nodata=nodata)
 
 
+# Declared bands: an unnamed raster is "schema undeclared" now, and training on
+# it requires an explicit override, so normal fixtures declare their identity.
+BAND_DATA = {"band_names": "blue,green,red,nir", "sensor": "sentinel-2"}
+
+
 def _upload(client, pid: int, payload: bytes, name: str = "scene.tif") -> dict:
-    resp = client.post(f"/projects/{pid}/upload", files={"file": (name, payload, "image/tiff")})
+    resp = client.post(
+        f"/projects/{pid}/upload", files={"file": (name, payload, "image/tiff")}, data=BAND_DATA
+    )
     assert resp.status_code == 201, resp.text
     return resp.json()
 
@@ -146,7 +153,7 @@ class TestPatchExportGeometry:
         _train(client, project["id"])
         resp = client.post(
             f"/projects/{project['id']}/predict",
-            json={"region": {"x0": 8, "y0": 8, "x1": 40, "y1": 24}},
+            json={"dataset_id": dataset["id"], "region": {"x0": 8, "y0": 8, "x1": 40, "y1": 24}},
         )
         assert resp.status_code == 200, resp.text
         got = client.get(f"/projects/{project['id']}/download/hard")
@@ -373,38 +380,51 @@ class TestSomIntegrity:
 class TestCheckpoints:
     """D7 — validated loading instead of bare joblib.load."""
 
+    dsid = None
+
     def _tamper(self, checkpoint: str, mutate) -> None:
         data = joblib.load(checkpoint)
         mutate(data)
         joblib.dump(data, checkpoint)
 
-    def test_checkpoint_validation_rejects_incompatible_payloads(self, client, project, labeled):
+    def test_checkpoint_validation_rejects_incompatible_payloads(
+        self, client, project, dataset, labeled
+    ):
         pid = project["id"]
+        assert labeled  # a trained model needs submitted labels
+        self.dsid = dataset["id"]
         run = _train(client, pid)
         path = run["checkpoint"]
 
         # 1. missing required field -> actionable 409, not 500
         self._tamper(path, lambda d: d.pop("bands"))
-        resp = client.post(f"/projects/{pid}/predict", json={})
+        resp = client.post(f"/projects/{pid}/predict", json={"dataset_id": self.dsid})
         assert resp.status_code == 409, resp.text
         assert "bands" in resp.json()["detail"]
 
-    def test_unknown_format_and_class_drift_are_rejected(self, client, project, labeled):
+    def test_unknown_format_and_class_drift_are_rejected(self, client, project, dataset, labeled):
         pid = project["id"]
+        assert labeled  # a trained model needs submitted labels
+        self.dsid = dataset["id"]
         run = _train(client, pid)
         self._tamper(run["checkpoint"], lambda d: d.__setitem__("format", "someone-elses-format"))
-        assert client.post(f"/projects/{pid}/predict", json={}).status_code == 409
+        assert (
+            client.post(f"/projects/{pid}/predict", json={"dataset_id": self.dsid}).status_code
+            == 409
+        )
 
         fresh = _train(client, pid)
         self._tamper(
             fresh["checkpoint"], lambda d: d.__setitem__("classes", list(reversed(d["classes"])))
         )
-        resp = client.post(f"/projects/{pid}/predict", json={})
+        resp = client.post(f"/projects/{pid}/predict", json={"dataset_id": self.dsid})
         assert resp.status_code == 409, resp.text
         assert "class" in resp.json()["detail"].lower()
 
-    def test_legacy_v1_checkpoint_is_treated_as_patch(self, client, project, labeled):
+    def test_legacy_v1_checkpoint_is_treated_as_patch(self, client, project, dataset, labeled):
         pid = project["id"]
+        assert labeled  # a trained model needs submitted labels
+        self.dsid = dataset["id"]
         run = _train(client, pid)
 
         def downgrade(data):
@@ -413,19 +433,21 @@ class TestCheckpoints:
             data["format"] = "rsal-checkpoint-v1"
 
         self._tamper(run["checkpoint"], downgrade)
-        resp = client.post(f"/projects/{pid}/predict", json={})
+        resp = client.post(f"/projects/{pid}/predict", json={"dataset_id": self.dsid})
         assert resp.status_code == 200, resp.text
         assert resp.json()["resolution"] == "patch"
 
-    def test_feature_schema_mismatch_is_rejected(self, client, project, labeled):
+    def test_feature_schema_mismatch_is_rejected(self, client, project, dataset, labeled):
         pid = project["id"]
+        assert labeled  # a trained model needs submitted labels
+        self.dsid = dataset["id"]
         run = _train(client, pid)
 
         def claim_pixel(data):
             data["resolution"] = "pixel"  # schema still says patch-band-stats
 
         self._tamper(run["checkpoint"], claim_pixel)
-        resp = client.post(f"/projects/{pid}/predict", json={})
+        resp = client.post(f"/projects/{pid}/predict", json={"dataset_id": self.dsid})
         assert resp.status_code == 409
         assert "feature schema" in resp.json()["detail"].lower()
 
@@ -434,6 +456,7 @@ class TestReportedContext:
     """D8 — resolution and evaluation context must be visible."""
 
     def test_predict_and_metrics_report_resolution(self, client, project):
+        self._dsid = None
         pid = project["id"]
         ds = _upload(client, pid, _scene(64, 64))
         _labels(
@@ -453,7 +476,7 @@ class TestReportedContext:
         assert metrics["n_train"] == trained["n_samples"]
         assert "per_class_iou" in metrics
 
-        body = client.post(f"/projects/{pid}/predict", json={}).json()
+        body = client.post(f"/projects/{pid}/predict", json={"dataset_id": ds["id"]}).json()
         assert body["resolution"] == "pixel"
         field = client.get(f"/projects/{pid}/predict/map", params={"layer": "hard"}).json()
         assert field["resolution"] == "pixel"
@@ -488,7 +511,7 @@ class TestDownloads:
             ],
         )
         _train(client, pid, resolution="pixel")
-        assert client.post(f"/projects/{pid}/predict", json={}).status_code == 200
+        assert client.post(f"/projects/{pid}/predict", json={"dataset_id": ds["id"]}).status_code == 200
         _train(client, pid, resolution="patch")
 
         resp = client.get(f"/projects/{pid}/download/hard")
@@ -516,7 +539,7 @@ class TestDownloads:
             ],
         )
         _train(client, pid)
-        resp = client.post(f"/projects/{pid}/predict", json={})
+        resp = client.post(f"/projects/{pid}/predict", json={"dataset_id": ds["id"]})
         assert resp.status_code == 422
         assert "CRS" in resp.json()["detail"]
         # map layers (no GeoTIFF) still work so the UI can show the field
