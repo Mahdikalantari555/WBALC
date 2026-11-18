@@ -118,8 +118,9 @@ any future pixel-wise operation; no scene is assumed to be aligned.
 The database migration runner applies versioned additive migrations at startup.
 Migration 1 adds project study-area/classification fields and creates the scenes
 table; 2 adds `datasets.band_schema`, 3 adds `projects.taxonomy`, 4 adds
-`labels.submitted_class_name` and 5 adds `training_runs.trained_classes`. All are
-additive, idempotent and preserve existing RSAL rows. A `NULL` band schema
+`labels.submitted_class_name`, 5 adds `training_runs.trained_classes` and 6 adds
+`query_batches`/`query_items` plus the label → query-item link. All are additive,
+idempotent and preserve existing RSAL rows. A `NULL` band schema
 means "undeclared": band identity is never backfilled from filenames or a sensor
 default, so legacy datasets keep requiring an explicit override to be used.
 
@@ -288,6 +289,32 @@ this is not an implicit WGS84 conversion. Point labels outside the selected
 raster are rejected. Polygon labels must be closed finite rings and overlap the
 dataset. `LICENSE` applies to repository code only; third-party components keep
 their own licenses, which require a separate redistribution review.
+
+## Sampling history and annotation provenance
+
+Active-learning selections are no longer a browser artefact. Every successful
+query writes a durable batch and its items, in one transaction:
+
+| Recorded | Why it matters |
+| --- | --- |
+| Project, dataset, strategy, method, `strategy_version` | Which rule produced this selection |
+| Seed — **only** for `strategy=random` | A deterministic strategy has no seed to claim |
+| Candidate pool: patch size, stride, grid, labeled count, eligibility rule, ordered SHA-256 hash | Two batches are provably comparable, or provably not |
+| Model iteration / training run | What knowledge the pool was sampled with |
+| Per item: `pending`, `labeled`, `rejected`, `deferred` + time and note | A rejection is a decision, not silence |
+
+- `strategy=random` is the **seeded baseline**: same valid, unlabeled pool,
+  without replacement, repeatable from the recorded seed.
+- `GET /projects/{id}/queries` lists batches (newest first, with decision counts)
+  and `GET /projects/{id}/queries/{batch_id}` reopens one with identical item
+  identities and order, from any browser.
+- A label submitted from a query item links that version to the item
+  (`labels.query_batch_id` / `query_item_id`). `LabelOut.provenance` reads
+  `query` only when that link exists; typed and legacy labels report `manual`.
+- **No accounts, no collaboration claims.** Batches are project-scoped. A batch
+  records what was sampled, never who sampled it; `note` is free text, not an
+  author field.
+- Batches are append-only history: there is deliberately no delete endpoint.
 
 ## Water taxonomy and the derived binary product
 

@@ -10,6 +10,7 @@ from .v002_dataset_band_schema import upgrade as upgrade_v2
 from .v003_project_taxonomy import upgrade as upgrade_v3
 from .v004_label_submitted_class import upgrade as upgrade_v4
 from .v005_run_trained_classes import upgrade as upgrade_v5
+from .v006_query_batches import upgrade as upgrade_v6
 
 MIGRATIONS = [
     (1, upgrade_v1),
@@ -17,6 +18,7 @@ MIGRATIONS = [
     (3, upgrade_v3),
     (4, upgrade_v4),
     (5, upgrade_v5),
+    (6, upgrade_v6),
 ]
 
 

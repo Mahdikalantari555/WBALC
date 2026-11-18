@@ -15,6 +15,9 @@ import type {
   MetricsView,
   ProjectView,
   QueryBatchView,
+  QueryDecision,
+  QueryHistoryEntry,
+  QueryItemView,
   QuerySampleView,
   RunView,
   SceneView,
@@ -26,6 +29,8 @@ import type {
   RsalMapField,
   RsalMetrics,
   RsalProject,
+  RsalQueryBatch,
+  RsalQueryItem,
   RsalQueryResponse,
   RsalScene,
   RsalTrainResponse,
@@ -186,6 +191,10 @@ export function toLabel(label: RsalLabel, datasets: Map<number, RsalDataset>): L
     iteration: label.iteration,
     center: labelCenter(label, datasets),
     createdAt: label.created_at,
+    // Provenance is read, not derived: a label counts as query-answered only
+    // when the engine stored that link.
+    provenance: label.provenance === 'query' ? 'query' : 'manual',
+    submittedClassName: label.submitted_class_name ?? null,
   };
 }
 
@@ -271,12 +280,91 @@ export function toQueryBatch(response: RsalQueryResponse): QueryBatchView {
     uncertainty: sample.uncertainty,
   }));
   return {
+    batchId: response.batch_id != null ? String(response.batch_id) : null,
     strategy: response.strategy,
     method: response.method,
+    strategyVersion: response.strategy_version ?? null,
+    seed: response.seed ?? null,
+    requestedSize: response.requested_size ?? null,
     modelIteration: response.model_iteration,
+    trainingRunId: response.training_run_id != null ? String(response.training_run_id) : null,
     notes: response.notes ?? [],
-    requestedAt: new Date().toISOString(),
+    requestedAt: response.created_at ?? new Date().toISOString(),
+    pool: response.pool
+      ? {
+          size: response.pool.size,
+          hash: response.pool.hash,
+          patchSize: response.pool.patch_size,
+          stride: response.pool.stride,
+          grid: response.pool.grid,
+          gridCells: response.pool.grid_cells,
+          labeledPatches: response.pool.n_labeled_patches,
+          excludeLabeled: response.pool.exclude_labeled,
+          eligibility: response.pool.eligibility,
+        }
+      : null,
     samples,
+  };
+}
+
+/** Shape one durable query item (a selected sample plus its decision). */
+export function toQueryItem(item: RsalQueryItem): QueryItemView {
+  return {
+    id: String(item.id),
+    position: item.position,
+    sampleId: item.sample_id,
+    datasetId: String(item.dataset_id),
+    row: item.row,
+    col: item.col,
+    center: [item.coords.center_x, item.coords.center_y],
+    window: { x0: item.coords.x0, y0: item.coords.y0, x1: item.coords.x1, y1: item.coords.y1 },
+    geo: item.geo_coords?.center
+      ? [Number(item.geo_coords.center[0]), Number(item.geo_coords.center[1])]
+      : null,
+    bbox: item.geo_coords?.bbox
+      ? ([...item.geo_coords.bbox].slice(0, 4) as [number, number, number, number])
+      : null,
+    score: item.score ?? null,
+    uncertainty: item.uncertainty ?? null,
+    prediction: item.prediction,
+    confidence: item.confidence,
+    status: item.status,
+    decidedClass: item.decided_class ?? null,
+    decidedAt: item.decided_at ?? null,
+    decisionNote: item.decision_note ?? null,
+    labelId: item.label_id != null ? String(item.label_id) : null,
+  };
+}
+
+/** Shape a reopened batch, keeping server order and recorded decisions. */
+export function toQueryHistory(batch: RsalQueryBatch): QueryHistoryEntry {
+  const decisions: Record<QueryDecision, number> = {
+    pending: 0,
+    labeled: 0,
+    rejected: 0,
+    deferred: 0,
+  };
+  for (const [key, value] of Object.entries(batch.decisions ?? {})) {
+    if (key in decisions) decisions[key as QueryDecision] = Number(value);
+  }
+  return {
+    batchId: String(batch.id),
+    strategy: batch.strategy,
+    method: batch.method,
+    strategyVersion: batch.strategy_version,
+    seed: batch.seed,
+    requested: batch.batch_size_requested,
+    returned: batch.batch_size_returned,
+    poolSize: batch.pool?.size ?? null,
+    poolHash: batch.pool?.hash ?? null,
+    modelIteration: batch.model_iteration,
+    trainingRunId: batch.training_run_id != null ? String(batch.training_run_id) : null,
+    datasetId: batch.dataset_id != null ? String(batch.dataset_id) : null,
+    note: batch.note,
+    notes: batch.notes ?? [],
+    createdAt: batch.created_at,
+    decisions,
+    items: (batch.items ?? []).map(toQueryItem),
   };
 }
 

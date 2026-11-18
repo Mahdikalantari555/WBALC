@@ -36,6 +36,9 @@ class Project(Base):
     labels: Mapped[list["Label"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     training_runs: Mapped[list["TrainingRun"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     exports: Mapped[list["Export"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    query_batches: Mapped[list["QueryBatch"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Scene(Base):
@@ -122,6 +125,11 @@ class Label(Base):
     submitted_class_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     iteration: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
+    # Provenance: which durable query item (if any) this version answered.
+    # NULL means the label was typed or imported directly — reported as manual,
+    # never attributed to a query it did not come from.
+    query_batch_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    query_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="labels")
@@ -144,6 +152,80 @@ class TrainingRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="training_runs")
+
+
+class QueryBatch(Base):
+    """One durable active-learning request: what was asked, of which pool, why.
+
+    The batch is the scientific record of a selection. It is written in the same
+    transaction as its items, so a failed query leaves nothing visible. Nothing
+    here implies an authenticated operator: `note` is free text, and the app has
+    no identity system.
+    """
+
+    __tablename__ = "query_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    dataset_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    strategy: Mapped[str] = mapped_column(String(40), nullable=False)
+    method: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    strategy_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Seeded strategies record their seed; deterministic ones leave it NULL
+    # rather than pretending a random draw happened.
+    seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    batch_size_requested: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_size_returned: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Candidate pool: grid geometry, eligibility rules, size and an ordered hash
+    # of the eligible sample ids so two batches can be proved to share a pool.
+    pool: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    model_iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    training_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notes: Mapped[list] = mapped_column(JSON, default=list)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="query_batches")
+    items: Mapped[list["QueryItem"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan", order_by="QueryItem.position"
+    )
+
+
+class QueryItem(Base):
+    """One selected sample inside a batch, with its recorded decision."""
+
+    __tablename__ = "query_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("query_batches.id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    sample_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    dataset_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    row: Mapped[int] = mapped_column(Integer, nullable=False)
+    col: Mapped[int] = mapped_column(Integer, nullable=False)
+    coords: Mapped[dict] = mapped_column(JSON, default=dict)
+    geo_coords: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prediction: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # pending | labeled | rejected | deferred
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    decided_class: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The label version this decision produced, when one was submitted from here.
+    label_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    batch: Mapped[QueryBatch] = relationship(back_populates="items")
 
 
 class Export(Base):

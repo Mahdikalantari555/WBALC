@@ -260,6 +260,7 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
         (3,),
         (4,),
         (5,),
+        (6,),
     ]
     columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     assert {"study_area_geometry", "study_area_crs", "classification_config"}.issubset(columns)
@@ -272,6 +273,13 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
         row[1] for row in connection.execute("PRAGMA table_info(labels)")
     }
     assert connection.execute("SELECT taxonomy FROM projects").fetchone() == (None,)
+    # Phase 2 adds durable sampling records; the legacy label keeps manual
+    # provenance (no batch link is invented for it).
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"query_batches", "query_items"}.issubset(tables)
+    label_columns = {row[1] for row in connection.execute("PRAGMA table_info(labels)")}
+    assert {"query_batch_id", "query_item_id"}.issubset(label_columns)
+    assert connection.execute("SELECT COUNT(*) FROM labels WHERE query_item_id IS NOT NULL").fetchone() == (0,)
     connection.close()
 
 

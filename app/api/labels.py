@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 
-from ..models import Label
+from ..models import Label, QueryBatch, QueryItem, utcnow
 from ..schemas import LabelBatchCreate, LabelCreate, LabelOut
 from ..services.label_service import derive_sample_id, latest_labels
 from ..services.pipeline import run_training
@@ -121,6 +121,38 @@ async def _store_label(session, settings, project, payload: LabelCreate) -> Labe
     )
     version = (result.scalar_one_or_none() or 0) + 1
 
+    query_batch_id = None
+    query_item_id = None
+    if payload.query_item_id is not None or payload.query_batch_id is not None:
+        if payload.query_item_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="query_item_id is required when query_batch_id is given",
+            )
+        item = await session.get(QueryItem, payload.query_item_id)
+        batch = await session.get(QueryBatch, item.batch_id) if item is not None else None
+        if item is None or batch is None or batch.project_id != project.id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Query item {payload.query_item_id} is not part of this project",
+            )
+        if payload.query_batch_id is not None and payload.query_batch_id != batch.id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Query item {item.id} belongs to batch {batch.id}, not {payload.query_batch_id}",
+            )
+        # The link must describe the same sample the label is for, otherwise the
+        # provenance would attribute a label to a suggestion it never answered.
+        if item.sample_id != sid:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Query item {item.id} is for sample {item.sample_id}, but this label "
+                    f"resolves to {sid}"
+                ),
+            )
+        query_batch_id, query_item_id = batch.id, item.id
+
     label = Label(
         project_id=project.id,
         dataset_id=dataset.id if dataset is not None else None,
@@ -135,9 +167,34 @@ async def _store_label(session, settings, project, payload: LabelCreate) -> Labe
         ),
         iteration=payload.iteration,
         version=version,
+        query_batch_id=query_batch_id,
+        query_item_id=query_item_id,
     )
     session.add(label)
+    if query_item_id is not None:
+        # Flush first: the item must reference the real label version id, not a
+        # placeholder that a later rollback would leave dangling.
+        await session.flush()
+        item.label_id = label.id
+        item.status = "labeled"
+        item.decided_class = class_name
+        item.decided_at = utcnow()
+        clean = payload.submitted_class_name
+        if clean and clean != class_name:
+            item.decision_note = f"submitted as '{clean}'"
     return label
+
+
+def _label_out(label) -> LabelOut:
+    """Serialise a label, stating its provenance explicitly.
+
+    `provenance` is derived only from the stored link: a label is 'query' when it
+    was submitted from a durable query item, and 'manual' when it was typed or
+    imported. It is never guessed from timestamps or matching sample ids.
+    """
+    out = LabelOut.model_validate(label)
+    out.provenance = "query" if label.query_item_id is not None else "manual"
+    return out
 
 
 def _train_response(run) -> TrainResponse:
@@ -184,10 +241,10 @@ async def submit_labels(
         await session.refresh(label)
 
     if isinstance(payload, LabelCreate) and not do_train:
-        return LabelOut.model_validate(stored[0])
+        return _label_out(stored[0])
 
     result = {
-        "labels": [LabelOut.model_validate(l) for l in stored],
+        "labels": [_label_out(l) for l in stored],
         "training": None,
         "training_error": None,
     }
@@ -209,14 +266,16 @@ async def list_current_labels(
     """Current (latest-version) labels; pass all_versions=true for full history."""
     await get_project(session, project_id)
     labels = await project_labels(session, project_id)
-    return labels if all_versions else latest_labels(labels)
+    kept = labels if all_versions else latest_labels(labels)
+    return [_label_out(label) for label in kept]
 
 
 @router.get("/history", response_model=list[LabelOut])
 async def label_history(project_id: int, session: SessionDep) -> list[Label]:
     """Full label history for the project (all samples, all versions)."""
     await get_project(session, project_id)
-    return await project_labels(session, project_id)
+    labels = await project_labels(session, project_id)
+    return [_label_out(label) for label in labels]
 
 
 @router.delete("/labels/{sample_id}", status_code=204)

@@ -45,14 +45,25 @@ export interface ReviewDraft {
   at: string;
 }
 
-/** Persisted per-project review state: the queue is a cache, not the truth. */
+/**
+ * Persisted per-project review state. The server owns the queue: `batchId` is
+ * the durable identity, and the cached copies below exist only so a reload is
+ * instant. `decisions` are the *submitted* decisions read back from the engine
+ * (or just written to it); a draft that was never submitted is never claimed.
+ */
 export interface ReviewState {
   batch: QueryBatchView | null;
+  batchId: string | null;
   decisions: Record<string, { className: string; at: string; sampleId: string }>;
   skipped: string[];
 }
 
-const EMPTY_REVIEW: ReviewState = { batch: null, decisions: {}, skipped: [] };
+const EMPTY_REVIEW: ReviewState = {
+  batch: null,
+  batchId: null,
+  decisions: {},
+  skipped: [],
+};
 
 export interface WorkspaceApi {
   locale: ReturnType<typeof createLocaleStore>;
@@ -400,6 +411,7 @@ class Workspace {
       const parsed = JSON.parse(raw) as Partial<ReviewState>;
       this.review = {
         batch: parsed.batch ?? null,
+        batchId: parsed.batchId ?? parsed.batch?.batchId ?? null,
         decisions: parsed.decisions ?? {},
         skipped: parsed.skipped ?? [],
       };
@@ -418,7 +430,23 @@ class Workspace {
   }
 
   setBatch(batch: QueryBatchView) {
-    this.review = { ...this.review, batch };
+    this.review = { ...this.review, batch, batchId: batch.batchId };
+    this.persistReview();
+  }
+
+  /**
+   * Point the workspace at a durable batch from the server.
+   *
+   * Submitted decisions come from the engine's query items; anything the browser
+   * merely drafted is dropped, because it was never submitted and pretending
+   * otherwise is exactly what this phase forbids.
+   */
+  loadBatch(batch: QueryBatchView, batchId: string, submitted: Record<string, string>) {
+    const decisions: ReviewState['decisions'] = {};
+    for (const [sampleId, className] of Object.entries(submitted)) {
+      decisions[sampleId] = { className, at: new Date().toISOString(), sampleId };
+    }
+    this.review = { batch, batchId, decisions, skipped: [] };
     this.persistReview();
   }
 

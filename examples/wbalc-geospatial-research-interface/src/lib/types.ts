@@ -126,6 +126,10 @@ export interface LabelView {
   /** WGS84 anchor for the map, when the label can be projected. */
   center: [number, number] | null;
   createdAt: string;
+  /** 'query' only when the engine recorded a query-item link; never inferred. */
+  provenance: 'manual' | 'query';
+  /** Text the annotator submitted when it differed from the resolved class. */
+  submittedClassName: string | null;
 }
 
 export interface ClassMetric {
@@ -187,12 +191,81 @@ export interface QuerySampleView {
 }
 
 export interface QueryBatchView {
+  /**
+   * Durable identity of the selection. The server owns the queue; the browser
+   * copy is a cache that can always be reloaded from here.
+   */
+  batchId: string | null;
   strategy: string;
   method: string | null;
+  strategyVersion: string | null;
+  seed: number | null;
+  requestedSize: number | null;
   modelIteration: number | null;
+  trainingRunId: string | null;
   notes: string[];
   requestedAt: string;
+  pool: QueryPoolView | null;
   samples: QuerySampleView[];
+}
+
+/** The eligible candidate pool a batch sampled from. */
+export interface QueryPoolView {
+  size: number;
+  hash: string;
+  patchSize: number;
+  stride: number;
+  grid: { rows: number; cols: number };
+  gridCells: number;
+  labeledPatches: number;
+  excludeLabeled: boolean;
+  eligibility: string;
+}
+
+export type QueryDecision = 'pending' | 'labeled' | 'rejected' | 'deferred';
+
+/** One selected sample in a durable batch, with its recorded decision. */
+export interface QueryItemView {
+  id: string;
+  position: number;
+  sampleId: string;
+  datasetId: string;
+  row: number;
+  col: number;
+  center: [number, number];
+  window: PixelWindow;
+  geo: [number, number] | null;
+  bbox: Bounds | null;
+  score: number | null;
+  uncertainty: number | null;
+  prediction: string | null;
+  confidence: number | null;
+  status: QueryDecision;
+  decidedClass: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  labelId: string | null;
+}
+
+/** A batch reopened from the server: same identities, order and decisions. */
+export interface QueryHistoryEntry {
+  batchId: string;
+  strategy: string;
+  method: string | null;
+  strategyVersion: string;
+  seed: number | null;
+  requested: number;
+  returned: number;
+  poolSize: number | null;
+  poolHash: string | null;
+  modelIteration: number | null;
+  trainingRunId: string | null;
+  datasetId: string | null;
+  note: string | null;
+  notes: string[];
+  createdAt: string;
+  decisions: Record<QueryDecision, number>;
+  items: QueryItemView[];
 }
 
 export interface MapFieldView {

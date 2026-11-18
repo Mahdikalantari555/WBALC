@@ -40,6 +40,9 @@ interface SubmitBody {
   revise?: boolean;
   autoTrain?: boolean;
   modelType?: 'rf' | 'lightgbm';
+  /** Set when the operator is answering a durable query item. */
+  queryBatchId?: string | null;
+  queryItemId?: string | null;
 }
 
 /**
@@ -47,7 +50,8 @@ interface SubmitBody {
  *
  * The label is submitted in *pixel* space with the query batch's own
  * `sample_id`, so re-submitting a corrected class creates a new version of the
- * same sample instead of a second, unrelated label.
+ * same sample instead of a second, unrelated label. When `queryItemId` is given,
+ * the engine links this version to that durable item and marks it labeled.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
   try {
@@ -65,6 +69,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
       iteration: Math.max(0, Number(body.iteration ?? 0)),
       coordinate_space: 'pixel' as const,
       sample_resolution: 'patch' as const,
+      // Only sent when the label really came from a query item; otherwise the
+      // engine records manual provenance, which is the truthful answer.
+      ...(body.queryItemId
+        ? {
+            query_batch_id: body.queryBatchId ? Number(body.queryBatchId) : null,
+            query_item_id: Number(body.queryItemId),
+          }
+        : {}),
     };
     const response = await rsalJson<RsalLabel | RsalLabelBatchResponse>(
       `/projects/${params.id}/labels`,

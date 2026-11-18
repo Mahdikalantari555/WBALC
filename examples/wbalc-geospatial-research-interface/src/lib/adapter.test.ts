@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toDataset, toQueryBatch, toMetrics, toRun, labelCenter } from './server/adapter';
+import { toDataset, toQueryBatch, toQueryHistory, toMetrics, toRun, labelCenter } from './server/adapter';
 import type { RsalDataset, RsalLabel, RsalMetrics, RsalQueryResponse } from './server/rsal';
 
 const dataset = (overrides: Partial<RsalDataset> = {}): RsalDataset => ({
@@ -131,8 +131,10 @@ describe('metrics view model', () => {
 describe('query batch view model', () => {
   it('maps pixel windows and geo centres', () => {
     const response: RsalQueryResponse = {
+      batch_id: 7,
       strategy: 'diversity',
       method: null,
+      seed: null,
       batch_size: 1,
       model_iteration: null,
       notes: ['cold start'],
@@ -154,6 +156,117 @@ describe('query batch view model', () => {
     expect(sample.geo).toEqual([500800, 4649296]);
     expect(sample.center).toEqual([80, 48]);
     expect(view.notes).toEqual(['cold start']);
+    expect(view.batchId).toBe('7');
+    // A deterministic strategy records no seed rather than a fake one.
+    expect(view.seed).toBeNull();
+  });
+
+  it('carries the recorded pool of a seeded random batch', () => {
+    const view = toQueryBatch({
+      batch_id: 12,
+      strategy: 'random',
+      method: null,
+      strategy_version: 'query-v1',
+      seed: 99,
+      batch_size: 0,
+      requested_size: 20,
+      model_iteration: null,
+      notes: [],
+      pool: {
+        size: 64,
+        hash: 'abc123',
+        patch_size: 8,
+        stride: 8,
+        grid: { rows: 8, cols: 8 },
+        grid_cells: 64,
+        n_labeled_patches: 0,
+        exclude_labeled: true,
+        eligibility: 'valid-source-pixels and unlabeled',
+      },
+      samples: [],
+    });
+    expect(view.batchId).toBe('12');
+    expect(view.seed).toBe(99);
+    expect(view.requestedSize).toBe(20);
+    expect(view.pool?.hash).toBe('abc123');
+    expect(view.pool?.size).toBe(64);
+  });
+
+  it('shapes a reopened batch with its decisions and order', () => {
+    const entry = toQueryHistory({
+      id: 4,
+      project_id: 1,
+      dataset_id: 2,
+      strategy: 'random',
+      method: null,
+      strategy_version: 'query-v1',
+      seed: 5,
+      batch_size_requested: 3,
+      batch_size_returned: 2,
+      pool: {
+        size: 62,
+        hash: 'h',
+        patch_size: 8,
+        stride: 8,
+        grid: { rows: 8, cols: 8 },
+        grid_cells: 64,
+        n_labeled_patches: 2,
+        exclude_labeled: true,
+        eligibility: 'valid-source-pixels and unlabeled',
+      },
+      parameters: {},
+      model_iteration: null,
+      training_run_id: null,
+      notes: [],
+      note: null,
+      created_at: '2026-01-02T03:04:05Z',
+      decisions: { pending: 1, labeled: 1, rejected: 0, deferred: 0 },
+      items: [
+        {
+          id: 10,
+          position: 0,
+          sample_id: 'd2_r0_c0',
+          dataset_id: 2,
+          row: 0,
+          col: 0,
+          coords: { row: 0, col: 0, x0: 0, y0: 0, x1: 8, y1: 8, center_x: 4, center_y: 4 },
+          geo_coords: null,
+          score: null,
+          uncertainty: null,
+          prediction: null,
+          confidence: null,
+          status: 'labeled',
+          decided_class: 'open_water',
+          decided_at: '2026-01-02T03:10:00Z',
+          decision_note: null,
+          label_id: 31,
+        },
+        {
+          id: 11,
+          position: 1,
+          sample_id: 'd2_r0_c1',
+          dataset_id: 2,
+          row: 0,
+          col: 1,
+          coords: { row: 0, col: 1, x0: 8, y0: 0, x1: 16, y1: 8, center_x: 12, center_y: 4 },
+          geo_coords: null,
+          score: null,
+          uncertainty: null,
+          prediction: null,
+          confidence: null,
+          status: 'pending',
+          decided_class: null,
+          decided_at: null,
+          decision_note: null,
+          label_id: null,
+        },
+      ],
+    });
+    expect(entry.items.map((item) => item.sampleId)).toEqual(['d2_r0_c0', 'd2_r0_c1']);
+    expect(entry.items[0].status).toBe('labeled');
+    expect(entry.items[0].labelId).toBe('31');
+    expect(entry.decisions.labeled).toBe(1);
+    expect(entry.poolSize).toBe(62);
   });
 });
 

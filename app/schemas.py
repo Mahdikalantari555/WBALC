@@ -314,6 +314,10 @@ class LabelCreate(BaseModel):
     coordinate_space: Literal["pixel", "map"] = "pixel"
     sample_resolution: Literal["patch", "pixel"] = "patch"
     coordinate_crs: str | None = None
+    # Where the annotator saw this sample. Supplying it links the label version
+    # to that durable query item; omitting it keeps manual/legacy provenance.
+    query_batch_id: int | None = None
+    query_item_id: int | None = None
 
 
 class LabelBatchCreate(BaseModel):
@@ -336,12 +340,16 @@ class LabelOut(BaseModel):
     class_name: str
     iteration: int
     version: int
+    query_batch_id: int | None = None
+    query_item_id: int | None = None
+    # manual | query — reported, never inferred from anything but the stored link.
+    provenance: str = "manual"
     created_at: datetime
 
 
 # ---------------------------------------------------------------- query
 class QueryRequest(BaseModel):
-    strategy: Literal["uncertainty", "diversity", "hybrid", "som"] = "uncertainty"
+    strategy: Literal["uncertainty", "diversity", "hybrid", "som", "random"] = "uncertainty"
     batch_size: int = Field(default=10, ge=1, le=10000)
     method: Literal["least_confidence", "margin", "entropy"] = "least_confidence"
     dataset_id: int | None = None
@@ -354,6 +362,12 @@ class QueryRequest(BaseModel):
     som_cols: int | None = Field(default=None, ge=2, le=32)
     som_epochs: int = Field(default=50, ge=5, le=500)
     som_cell: tuple[int, int] | None = None
+    # Seeded baseline. Only used by strategy='random'; the seed is always
+    # recorded, and the default is the engine's configured random_state.
+    seed: int | None = Field(default=None, ge=0)
+    # Free-text operator note. It is not an identity claim: the app has no
+    # authentication, so this is never presented as an author.
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class QuerySample(BaseModel):
@@ -367,15 +381,96 @@ class QuerySample(BaseModel):
     embedding: list[float] | None = None
 
 
+class QueryPoolOut(BaseModel):
+    """The eligible candidate pool a batch sampled from."""
+
+    size: int
+    hash: str
+    patch_size: int
+    stride: int
+    grid: dict
+    grid_cells: int
+    n_labeled_patches: int
+    exclude_labeled: bool
+    eligibility: str
+
+
 class QueryResponse(BaseModel):
+    # Durable identity of this selection. Present on every successful query, so
+    # the browser queue can always be reloaded from the server.
+    batch_id: int
     strategy: str
     method: str | None
+    strategy_version: str = "query-v1"
+    seed: int | None = None
     batch_size: int
+    requested_size: int | None = None
     model_iteration: int | None
+    training_run_id: int | None = None
+    dataset_id: int | None = None
+    created_at: datetime | None = None
+    pool: QueryPoolOut | None = None
     # Human-readable explanations of deliberate degradations (e.g. a pixel
     # checkpoint that cannot score patch embeddings). Empty when none apply.
     notes: list[str] = Field(default_factory=list)
     samples: list[QuerySample]
+
+
+# ------------------------------------------------- query batch history (Phase 2)
+class QueryDecisionRequest(BaseModel):
+    status: Literal["labeled", "rejected", "deferred", "pending"]
+    class_name: str | None = None
+    label_id: int | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class QueryItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    position: int
+    sample_id: str
+    dataset_id: int
+    row: int
+    col: int
+    coords: dict
+    geo_coords: dict | None = None
+    score: float | None = None
+    uncertainty: float | None = None
+    prediction: str | None = None
+    confidence: float | None = None
+    status: str
+    decided_class: str | None = None
+    decided_at: datetime | None = None
+    decision_note: str | None = None
+    label_id: int | None = None
+
+
+class QueryBatchSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    dataset_id: int | None = None
+    strategy: str
+    method: str | None
+    strategy_version: str
+    seed: int | None = None
+    batch_size_requested: int
+    batch_size_returned: int
+    pool: dict | None = None
+    parameters: dict = Field(default_factory=dict)
+    model_iteration: int | None = None
+    training_run_id: int | None = None
+    notes: list[str] = Field(default_factory=list)
+    note: str | None = None
+    created_at: datetime
+    # Decision counts per state, so a list view needs no per-item fetch.
+    decisions: dict[str, int] = Field(default_factory=dict)
+
+
+class QueryBatchOut(QueryBatchSummary):
+    items: list[QueryItemOut] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- training

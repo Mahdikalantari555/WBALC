@@ -5,7 +5,7 @@ Runs against a live dev/preview server of `examples/wbalc-geospatial-research-in
 (default http://localhost:5173) which must proxy to a live RSAL backend, and
 drives only the *browser-facing* adapter routes:
 
-    create project -> upload GeoTIFF -> diversity query -> label -> train
+    create project -> upload GeoTIFF -> durable query batches -> label -> train
     -> metrics/runs -> map field -> exports -> scene registration -> label
     import -> label deletion -> i18n document attributes
 
@@ -225,9 +225,92 @@ def main() -> None:
         check("sample view model has pixel window", sample["window"]["x1"] > sample["window"]["x0"])
         check("sample has geo centre (CRS)", sample["geo"] is not None and len(sample["geo"]) == 2)
 
+        # ------------------------------------------ durable batches (Phase 2)
+        check(
+            "batch carries durable identity + pool",
+            isinstance(batch.get("batchId"), str)
+            and batch["pool"]["size"] > 0
+            and batch["pool"]["eligibility"].startswith("valid-source-pixels"),
+            str(batch.get("batchId")),
+        )
+        check(
+            "deterministic strategy records no seed",
+            batch["seed"] is None,
+            str(batch["seed"]),
+        )
+
+        seeded = client.post(
+            f"/api/projects/{pid}/query",
+            json={
+                "strategy": "random",
+                "batchSize": 12,
+                "datasetId": str(did),
+                "seed": 4242,
+            },
+        ).json()
+        check("seeded random baseline", seeded["seed"] == 4242 and len(seeded["samples"]) == 12)
+        check(
+            "random and diversity share one candidate pool",
+            seeded["pool"]["hash"] == batch["pool"]["hash"],
+        )
+        again = client.post(
+            f"/api/projects/{pid}/query",
+            json={
+                "strategy": "random",
+                "batchSize": 12,
+                "datasetId": str(did),
+                "seed": 4242,
+            },
+        ).json()
+        check(
+            "seeded random is repeatable across requests",
+            [s["sampleId"] for s in again["samples"]]
+            == [s["sampleId"] for s in seeded["samples"]]
+            and again["batchId"] != seeded["batchId"],
+        )
+
+        history = client.get(f"/api/projects/{pid}/queries").json()
+        check(
+            "history lists batches newest first",
+            [entry["batchId"] for entry in history][:2]
+            == [again["batchId"], seeded["batchId"]],
+            str([entry["batchId"] for entry in history[:3]]),
+        )
+        reopened = client.get(f"/api/projects/{pid}/queries/{batch['batchId']}").json()
+        check(
+            "batch reopens with the same items and order",
+            [item["sampleId"] for item in reopened["items"]]
+            == [s["sampleId"] for s in batch["samples"]],
+        )
+
+        target = reopened["items"][0]
+        r = client.patch(
+            f"/api/projects/{pid}/queries/{batch['batchId']}/items/{target['id']}",
+            json={"status": "rejected", "note": "smoke: not water"},
+        )
+        check(
+            "rejection is a durable decision",
+            r.status_code == 200 and r.json()["status"] == "rejected",
+            str(r.status_code),
+        )
+        r = client.patch(
+            f"/api/projects/{pid}/queries/{batch['batchId']}/items/{target['id']}",
+            json={"status": "deferred"},
+        )
+        check("decision transitions persist", r.json()["status"] == "deferred")
+        listing = client.get(f"/api/projects/{pid}/queries").json()
+        entry = next(e for e in listing if e["batchId"] == str(batch["batchId"]))
+        check(
+            "history reports decision counts",
+            entry["decisions"]["deferred"] == 1
+            and entry["decisions"]["pending"] == entry["returned"] - 1,
+            str(entry["decisions"]),
+        )
+
         # ------------------------------------------------------------ labels
         classes = project["classes"]
         submitted = batch["samples"][:12]
+        linked_item = reopened["items"][1]
         for index, item in enumerate(submitted):
             r = client.post(
                 f"/api/projects/{pid}/labels",
@@ -238,6 +321,13 @@ def main() -> None:
                     "col": item["center"][0],
                     "row": item["center"][1],
                     "iteration": 0,
+                    # The first sample is answered from its durable query item,
+                    # so the engine records query provenance for it.
+                    **(
+                        {"queryBatchId": batch["batchId"], "queryItemId": linked_item["id"]}
+                        if index == 1
+                        else {}
+                    ),
                 },
             )
             check(f"submit label {index + 1}/{len(submitted)}", r.status_code == 200, str(r.status_code))
@@ -268,6 +358,28 @@ def main() -> None:
         r = client.get(f"/api/projects/{pid}/labels")
         labels = r.json()
         check("adapter label list", len(labels) == len(submitted) and labels[0]["center"] is not None)
+        linked = next(
+            (entry for entry in labels if entry["sampleId"] == submitted[1]["sampleId"]), None
+        )
+        check(
+            "label answered from a query item records query provenance",
+            linked is not None and linked["provenance"] == "query",
+            str(linked and linked["provenance"]),
+        )
+        check(
+            "typed labels report manual provenance",
+            all(
+                entry["provenance"] == "manual"
+                for entry in labels
+                if entry["sampleId"] != submitted[1]["sampleId"]
+            ),
+        )
+        item_after = client.get(f"/api/projects/{pid}/queries/{batch['batchId']}").json()["items"][1]
+        check(
+            "the query item became labeled and points at the label version",
+            item_after["status"] == "labeled" and item_after["labelId"] == linked["id"],
+            str(item_after["status"]),
+        )
 
         # ------------------------------------------------------------- train
         # Through the adapter: the resolution and validation protocol must be

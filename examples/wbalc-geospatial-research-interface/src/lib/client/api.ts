@@ -13,6 +13,8 @@ import type {
   MapFieldView,
   ProjectView,
   QueryBatchView,
+  QueryHistoryEntry,
+  QueryItemView,
   RunView,
   SceneView,
 } from '$lib/types';
@@ -80,7 +82,14 @@ export const api = {
 
   query: (
     id: string,
-    body: { strategy: string; method?: string; batchSize?: number; datasetId?: string },
+    body: {
+      strategy: string;
+      method?: string;
+      batchSize?: number;
+      datasetId?: string;
+      seed?: number | null;
+      note?: string | null;
+    },
   ) =>
     request<QueryBatchView>(`/api/projects/${enc(id)}/query`, {
       method: 'POST',
@@ -98,10 +107,35 @@ export const api = {
       row: number;
       iteration?: number;
       revise?: boolean;
+      queryBatchId?: string | null;
+      queryItemId?: string | null;
     },
   ) =>
     request<LabelView>(`/api/projects/${enc(id)}/labels`, {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  /** Durable sampling history (newest first). Items are fetched per batch. */
+  queryHistory: (id: string, limit = 25) =>
+    request<QueryHistoryEntry[]>(`/api/projects/${enc(id)}/queries?limit=${limit}`),
+
+  queryBatch: (id: string, batchId: string) =>
+    request<QueryHistoryEntry>(`/api/projects/${enc(id)}/queries/${enc(batchId)}`),
+
+  decideQueryItem: (
+    id: string,
+    batchId: string,
+    itemId: string,
+    body: {
+      status: 'pending' | 'labeled' | 'rejected' | 'deferred';
+      className?: string | null;
+      note?: string | null;
+    },
+  ) =>
+    request<QueryItemView>(`/api/projects/${enc(id)}/queries/${enc(batchId)}/items/${enc(itemId)}`, {
+      method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),

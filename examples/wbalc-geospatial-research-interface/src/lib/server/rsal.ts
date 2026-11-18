@@ -247,8 +247,15 @@ export interface RsalLabel {
   geometry: { type: 'Point' | 'Polygon'; coordinates: unknown };
   coordinate_space: 'pixel' | 'map';
   class_name: string;
+  /** Text the annotator submitted, when it differed (an alias). */
+  submitted_class_name?: string | null;
   iteration: number;
   version: number;
+  /** Durable query item this version answered, when it came from one. */
+  query_batch_id?: number | null;
+  query_item_id?: number | null;
+  /** 'query' only when the stored link says so; never inferred. */
+  provenance?: 'manual' | 'query';
   created_at: string;
 }
 
@@ -294,13 +301,75 @@ export interface RsalQuerySample {
   uncertainty: number | null;
 }
 
+export interface RsalQueryPool {
+  size: number;
+  hash: string;
+  patch_size: number;
+  stride: number;
+  grid: { rows: number; cols: number };
+  grid_cells: number;
+  n_labeled_patches: number;
+  exclude_labeled: boolean;
+  eligibility: string;
+}
+
 export interface RsalQueryResponse {
+  batch_id: number;
   strategy: string;
   method: string | null;
+  strategy_version?: string;
+  seed: number | null;
   batch_size: number;
+  requested_size?: number | null;
   model_iteration: number | null;
+  training_run_id?: number | null;
+  dataset_id?: number | null;
+  created_at?: string | null;
+  pool?: RsalQueryPool | null;
   notes: string[];
   samples: RsalQuerySample[];
+}
+
+/** A selected sample inside a durable batch, with its recorded decision. */
+export interface RsalQueryItem {
+  id: number;
+  position: number;
+  sample_id: string;
+  dataset_id: number;
+  row: number;
+  col: number;
+  coords: RsalQuerySample['coords'];
+  geo_coords: RsalQuerySample['geo_coords'];
+  score: number | null;
+  uncertainty: number | null;
+  prediction: string | null;
+  confidence: number | null;
+  status: 'pending' | 'labeled' | 'rejected' | 'deferred';
+  decided_class: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  label_id: number | null;
+}
+
+export interface RsalQueryBatch {
+  id: number;
+  project_id: number;
+  dataset_id: number | null;
+  strategy: string;
+  method: string | null;
+  strategy_version: string;
+  seed: number | null;
+  batch_size_requested: number;
+  batch_size_returned: number;
+  pool: RsalQueryPool | null;
+  parameters: Record<string, unknown>;
+  model_iteration: number | null;
+  training_run_id: number | null;
+  notes: string[];
+  note: string | null;
+  created_at: string;
+  decisions: Record<string, number>;
+  items?: RsalQueryItem[];
 }
 
 export interface RsalTrainResponse {
