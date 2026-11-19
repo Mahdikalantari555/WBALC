@@ -369,6 +369,14 @@
           <div><dt>{t('project.created')}</dt><dd>{date(dataset.createdAt)}</dd></div>
           <div><dt>{t('common.source')}</dt><dd>{number(dataset.sizeBytes / 1_048_576, 1)} MB</dd></div>
           <div>
+            <dt>{t('map.contentHash')}</dt>
+            <dd class="mono ltr-numeric small">
+              {dataset.contentSha256
+                ? `${dataset.contentSha256.slice(0, 16)}…`
+                : t('map.contentHashMissing')}
+            </dd>
+          </div>
+          <div>
             <dt>{t('project.studyArea')}</dt>
             <dd>
               {#if workspace.project?.studyAreaGeometry}

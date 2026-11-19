@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { toDataset, toMapField, toProject } from './server/adapter';
-import type { RsalDataset, RsalMapField, RsalProject } from './server/rsal';
+import {
+  toComparison,
+  toDataset,
+  toExperiment,
+  toMapField,
+  toProject,
+  toRun,
+  toRunLineage,
+} from './server/adapter';
+import type { RsalDataset, RsalMapField, RsalProject, RsalRunSummary } from './server/rsal';
 
 /**
  * Phase 0 (harden-pixel-classification-contract) contract tests.
@@ -240,5 +248,136 @@ describe('water taxonomy and derived binary product', () => {
 
   it('reports no binary product for a run that recorded no interpretation', () => {
     expect(toMapField(field({ binary: null })).binary).toBeNull();
+  });
+});
+
+describe('run lineage and comparison', () => {
+  const runRow = (overrides: Partial<RsalRunSummary> = {}): RsalRunSummary => ({
+    id: 9,
+    project_id: 1,
+    iteration: 3,
+    model_type: 'rf',
+    n_samples: 24,
+    accuracy: 0.82,
+    f1_macro: 0.79,
+    f1_weighted: 0.81,
+    confusion_matrix: [[1]],
+    per_class: {},
+    classes: ['open_water', 'emergent_vegetation', 'land'],
+    evaluation: 'random_holdout',
+    evaluation_details: null,
+    resolution: 'patch',
+    evaluation_strategy: 'random',
+    n_train: 18,
+    n_test: 6,
+    held_out_groups: null,
+    per_class_iou: {},
+    created_at: '2026-02-01T00:00:00Z',
+    manifest_hash: 'a'.repeat(64),
+    lineage_status: 'complete',
+    experiment_id: null,
+    checkpoint_sha256: 'b'.repeat(64),
+    ...overrides,
+  });
+
+  it('reports a complete run with its manifest hash', () => {
+    const view = toRun(runRow());
+    expect(view.lineageStatus).toBe('complete');
+    expect(view.manifestHash).toBe('a'.repeat(64));
+    expect(view.metrics.accuracy).toBeCloseTo(0.82);
+  });
+
+  it('reports a run with no manifest as legacy rather than guessing', () => {
+    const view = toRun(runRow({ manifest_hash: null, lineage_status: 'legacy', checkpoint_sha256: null }));
+    expect(view.lineageStatus).toBe('legacy');
+    expect(view.manifestHash).toBeNull();
+    expect(view.checkpointSha256).toBeNull();
+  });
+
+  it('shapes a lineage record, keeping missing fields visible', () => {
+    const view = toRunLineage({
+      run_id: 9,
+      iteration: 3,
+      experiment_id: null,
+      lineage_status: 'incomplete',
+      manifest: {
+        hash: 'c'.repeat(64),
+        labels: { hash: 'd'.repeat(64) },
+        inputs: [{ dataset_id: 1, content_sha256: null }],
+        environment: { revision: null, python: '3.11.9' },
+        config: { resolution: 'patch' },
+      },
+      manifest_hash: 'c'.repeat(64),
+      missing: ['dataset 1: content hash', 'code revision'],
+      artifact: { verified: false, reason: 'no checksum was recorded' },
+      notes: ['legacy artifact'],
+    });
+    expect(view.status).toBe('incomplete');
+    expect(view.missing).toContain('code revision');
+    expect(view.inputs[0].sha256).toBeNull();
+    expect(view.artifact?.verified).toBe(false);
+    expect(view.environment?.revision).toBeNull();
+  });
+
+  it('shapes a comparison and preserves the not-comparable verdict', () => {
+    const view = toComparison({
+      experiment_id: 2,
+      project_id: 1,
+      runs: [
+        {
+          run_id: 9,
+          iteration: 3,
+          model_type: 'rf',
+          accuracy: 0.8,
+          f1_macro: 0.7,
+          n_samples: 24,
+          evaluation: 'random_holdout',
+          lineage_status: 'complete',
+          manifest_hash: 'a'.repeat(64),
+          label_snapshot_hash: 'e'.repeat(64),
+          input_hashes: { '1': 'f'.repeat(64) },
+          config: { evaluation_strategy: 'random', resolution: 'patch' },
+          environment_revision: 'abc123',
+        },
+        {
+          run_id: 10,
+          iteration: 4,
+          model_type: 'rf',
+          accuracy: 0.7,
+          f1_macro: 0.6,
+          n_samples: 24,
+          evaluation: 'random_holdout',
+          lineage_status: 'complete',
+          manifest_hash: 'b'.repeat(64),
+          label_snapshot_hash: 'g'.repeat(64),
+          input_hashes: { '1': 'f'.repeat(64) },
+          config: { evaluation_strategy: 'spatial', resolution: 'patch' },
+          environment_revision: 'abc123',
+        },
+      ],
+      differences: { label_snapshot_hash: ['e', 'g'], evaluation: ['random', 'spatial'] },
+      comparable: false,
+      caveats: ['The runs trained on different label versions.'],
+    });
+    expect(view.comparable).toBe(false);
+    expect(view.runs.map((row) => row.runId)).toEqual(['9', '10']);
+    expect(Object.keys(view.differences)).toContain('label_snapshot_hash');
+    expect(view.caveats).toHaveLength(1);
+  });
+
+  it('shapes an experiment with its run membership', () => {
+    const view = toExperiment({
+      id: 2,
+      project_id: 1,
+      name: 'Patch vs holdout',
+      description: '',
+      hypothesis: null,
+      config: null,
+      created_at: '2026-02-01T00:00:00Z',
+      updated_at: '2026-02-01T00:00:00Z',
+      run_ids: [9, 10],
+    });
+    expect(view.id).toBe('2');
+    expect(view.runIds).toEqual(['9', '10']);
   });
 });

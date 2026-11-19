@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { ChartNoAxesCombined, Download, FileJson } from '@lucide/svelte';
+  import { ChartNoAxesCombined, Download, FileJson, FlaskConical, GitCompare, ShieldCheck, TriangleAlert } from '@lucide/svelte';
+  import { api, ClientError } from '../client/api';
+  import type { ComparisonView, ExperimentView, RunLineageView } from '../types';
   import ConfusionMatrix from '../components/ConfusionMatrix.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import MetricBar from '../components/MetricBar.svelte';
@@ -14,6 +16,15 @@
 
   let runId = $state<string | null>(null);
   let focus = $state<'all' | string>('all');
+  // ---- lineage (Phase 3)
+  let lineage = $state<RunLineageView | null>(null);
+  let lineageError = $state<string | null>(null);
+  let experiments = $state<ExperimentView[]>([]);
+  let experimentId = $state<string | null>(null);
+  let comparison = $state<ComparisonView | null>(null);
+  let comparisonError = $state<string | null>(null);
+  let newExperiment = $state('');
+  let busy = $state(false);
 
   const runs = $derived(workspace.runs);
 
@@ -52,6 +63,88 @@
       count: counts.get(name) ?? 0,
       share: (counts.get(name) ?? 0) / total,
     }));
+  });
+
+  /** Load the run's reproducibility record; "legacy" is shown, not filled in. */
+  async function loadLineage(id: string | null) {
+    if (!id || !workspace.project) {
+      lineage = null;
+      return;
+    }
+    lineageError = null;
+    try {
+      lineage = await api.runLineage(workspace.project.id, id);
+    } catch (error) {
+      lineage = null;
+      lineageError = error instanceof ClientError ? error.message : String(error);
+    }
+  }
+
+  async function loadExperiments() {
+    if (!workspace.project) return;
+    try {
+      experiments = await api.experiments(workspace.project.id);
+    } catch {
+      experiments = [];
+    }
+  }
+
+  async function loadComparison(id: string | null = experimentId) {
+    if (!workspace.project) return;
+    comparisonError = null;
+    try {
+      if (id) {
+        const experiment = experiments.find((entry) => entry.id === id);
+        comparison = experiment?.runIds.length
+          ? await api.compareRuns(workspace.project.id, experiment.runIds)
+          : null;
+      } else {
+        comparison = await api.compareRuns(workspace.project.id, []);
+      }
+    } catch (error) {
+      comparison = null;
+      comparisonError = error instanceof ClientError ? error.message : String(error);
+    }
+  }
+
+  async function createExperiment() {
+    if (!workspace.project || !newExperiment.trim()) return;
+    busy = true;
+    try {
+      const created = await api.createExperiment(workspace.project.id, {
+        name: newExperiment.trim(),
+        runIds: runId ? [runId] : [],
+      });
+      newExperiment = '';
+      experimentId = created.id;
+      await loadExperiments();
+      await loadComparison(created.id);
+      workspace.notify(t('evaluation.experiment.created', { name: created.name }));
+    } catch (error) {
+      comparisonError = error instanceof ClientError ? error.message : String(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function addCurrentRun() {
+    if (!workspace.project || !experimentId || !runId) return;
+    try {
+      await api.addRunsToExperiment(workspace.project.id, experimentId, [runId]);
+      await loadExperiments();
+      await loadComparison(experimentId);
+    } catch (error) {
+      comparisonError = error instanceof ClientError ? error.message : String(error);
+    }
+  }
+
+  $effect(() => {
+    const current = run?.id ?? null;
+    void loadLineage(current);
+  });
+
+  $effect(() => {
+    if (workspace.project) void loadExperiments();
   });
 
   function downloadCsv() {
@@ -200,9 +293,166 @@
     {/if}
   </div>
 
+  <section class="surface section-box experiment-panel" aria-labelledby="experiment-heading">
+    <div class="section-heading">
+      <div>
+        <h2 id="experiment-heading"><FlaskConical size={15} /> {t('evaluation.experiment.title')}</h2>
+        <p>{t('evaluation.experiment.description')}</p>
+      </div>
+      <GitCompare size={16} class="faint" />
+    </div>
+    <div class="experiment-controls">
+      <input
+        class="text-input"
+        placeholder={t('evaluation.experiment.namePlaceholder')}
+        bind:value={newExperiment}
+      />
+      <button class="button" onclick={createExperiment} disabled={busy || !newExperiment.trim()}>
+        {t('evaluation.experiment.create')}
+      </button>
+      <select
+        class="select"
+        value={experimentId ?? ''}
+        onchange={(event) => {
+          experimentId = (event.currentTarget as HTMLSelectElement).value || null;
+          void loadComparison(experimentId);
+        }}
+      >
+        <option value="">{t('evaluation.experiment.allRuns')}</option>
+        {#each experiments as entry (entry.id)}
+          <option value={entry.id}>{entry.name} ({entry.runIds.length})</option>
+        {/each}
+      </select>
+      {#if experimentId}
+        <button class="button quiet" onclick={addCurrentRun} disabled={!runId}>
+          {t('evaluation.experiment.addCurrent')}
+        </button>
+      {/if}
+    </div>
+
+    {#if comparisonError}
+      <p class="note-block warn">{comparisonError}</p>
+    {:else if comparison}
+      <p class="comparison-verdict" class:ok={comparison.comparable}>
+        {comparison.comparable
+          ? t('evaluation.compare.comparable')
+          : t('evaluation.compare.notComparable')}
+      </p>
+      <div class="table-scroll">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>{t('evaluation.experiment.run')}</th>
+              <th>{t('evaluation.experiment.model')}</th>
+              <th>{t('evaluation.experiment.protocol')}</th>
+              <th>{t('arena.accuracy')}</th>
+              <th>{t('arena.f1')}</th>
+              <th>{t('evaluation.experiment.labels')}</th>
+              <th>{t('evaluation.experiment.lineage')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each comparison.runs as row (row.runId)}
+              <tr>
+                <td class="mono">#{row.iteration}</td>
+                <td>{row.modelType} · {String(row.config.resolution ?? '—')}</td>
+                <td>{row.config.evaluation_strategy ?? row.evaluation ?? '—'}</td>
+                <td class="mono ltr-numeric">{row.accuracy === null ? '—' : percent(row.accuracy)}</td>
+                <td class="mono ltr-numeric">{row.f1Macro === null ? '—' : percent(row.f1Macro)}</td>
+                <td class="mono ltr-numeric small">{row.labelSnapshotHash ? row.labelSnapshotHash.slice(0, 8) : '—'}</td>
+                <td>
+                  <span class={`lineage-status ${row.status}`}>{t(`evaluation.lineage.status.${row.status}`)}</span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if Object.keys(comparison.differences).length}
+        <div class="differences">
+          <span class="section-label">{t('evaluation.compare.differences')}</span>
+          <ul>
+            {#each Object.keys(comparison.differences) as key (key)}
+              <li class="mono small">{key}</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+      {#each comparison.caveats as caveat}
+        <p class="note-block">{caveat}</p>
+      {/each}
+    {:else}
+      <p class="note-block">{t('evaluation.compare.empty')}</p>
+    {/if}
+  </section>
+
   {#if metrics}
     <div class="evaluation-grid">
       <div class="stack">
+        <section class="surface section-box" aria-labelledby="lineage-heading">
+          <div class="section-heading">
+            <div>
+              <h2 id="lineage-heading">{t('evaluation.lineage.title')}</h2>
+              <p>{t('evaluation.lineage.description')}</p>
+            </div>
+            {#if lineage?.status === 'complete'}
+              <ShieldCheck size={16} class="accent" />
+            {:else}
+              <TriangleAlert size={16} class="warn-icon" />
+            {/if}
+          </div>
+          {#if lineageError}
+            <p class="note-block warn">{lineageError}</p>
+          {:else if lineage}
+            <dl class="kv-list">
+              <div>
+                <dt>{t('evaluation.lineage.status')}</dt>
+                <dd class={`lineage-status ${lineage.status}`}>{t(`evaluation.lineage.status.${lineage.status}`)}</dd>
+              </div>
+              <div>
+                <dt>{t('evaluation.lineage.manifest')}</dt>
+                <dd class="mono ltr-numeric small">{lineage.manifestHash ? `${lineage.manifestHash.slice(0, 16)}…` : t('evaluation.lineage.unavailable')}</dd>
+              </div>
+              <div>
+                <dt>{t('evaluation.lineage.labels')}</dt>
+                <dd class="mono ltr-numeric small">{lineage.labelSnapshotHash ? `${lineage.labelSnapshotHash.slice(0, 16)}…` : t('evaluation.lineage.unavailable')}</dd>
+              </div>
+              {#each lineage.inputs as input (input.datasetId)}
+                <div>
+                  <dt>{t('evaluation.lineage.input', { id: input.datasetId })}</dt>
+                  <dd class="mono ltr-numeric small">{input.sha256 ? `${input.sha256.slice(0, 16)}…` : t('evaluation.lineage.noContentHash')}</dd>
+                </div>
+              {/each}
+              <div>
+                <dt>{t('evaluation.lineage.checkpoint')}</dt>
+                <dd>
+                  {#if lineage.artifact?.verified}
+                    <span class="lineage-status complete">{t('evaluation.lineage.artifactVerified')}</span>
+                  {:else if lineage.artifact?.reason}
+                    <span class="lineage-status legacy">{lineage.artifact.reason}</span>
+                  {:else}
+                    {t('evaluation.lineage.unavailable')}
+                  {/if}
+                </dd>
+              </div>
+              {#if lineage.environment?.revision}
+                <div>
+                  <dt>{t('evaluation.lineage.revision')}</dt>
+                  <dd class="mono ltr-numeric small">{lineage.environment.revision.slice(0, 12)}</dd>
+                </div>
+              {/if}
+            </dl>
+            {#if lineage.missing.length}
+              <p class="note-block warn">
+                <strong>{t('evaluation.lineage.missing')}</strong>{lineage.missing.join(', ')}
+              </p>
+            {/if}
+            {#each lineage.notes as note}
+              <p class="note-block">{note}</p>
+            {/each}
+          {/if}
+        </section>
+
         <MetricsTable {metrics} focus={focus} />
         <ConfusionMatrix {metrics} focus={focus} />
       </div>
@@ -282,6 +532,23 @@
 {/if}
 
 <style>
+  .lineage-status { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .lineage-status.complete { color: #7fd6b4; border-color: #2f6b57; }
+  .lineage-status.incomplete { color: #e5a25a; border-color: #7a5528; }
+  .lineage-status.legacy { color: #9fb2c4; }
+  .accent { color: #66dcbe; }
+  .warn-icon { color: #e5a25a; }
+  .small { font-size: 11px; }
+  .experiment-panel { display: grid; gap: 10px; }
+  .experiment-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .experiment-controls .text-input, .experiment-controls .select { max-width: 240px; }
+  .comparison-verdict { margin: 0; font-size: 12px; color: #e5a25a; }
+  .comparison-verdict.ok { color: #7fd6b4; }
+  .table-scroll { overflow-x: auto; }
+  .compare-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .compare-table th, .compare-table td { text-align: start; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  .compare-table th { color: var(--faint); font-weight: 400; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .differences ul { margin: 4px 0 0; padding-inline-start: 16px; color: var(--muted); }
   .evaluation-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 10px 15px; padding: 13px 15px; margin-bottom: 15px; }
   .evaluation-filters .field { min-width: min(190px, 100%); }
   .filter-meta { color: var(--faint); margin: 0 0 8px auto; font-size: 11px; }

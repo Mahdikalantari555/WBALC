@@ -14,7 +14,10 @@ import type {
   ProjectView,
   QueryBatchView,
   QueryHistoryEntry,
+  ComparisonView,
+  ExperimentView,
   QueryItemView,
+  RunLineageView,
   RunView,
   SceneView,
 } from '$lib/types';
@@ -115,6 +118,42 @@ export const api = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+    }),
+
+  /** Reproducibility record of one run (manifest, artifact, what is missing). */
+  runLineage: (id: string, runId: string) =>
+    request<RunLineageView>(`/api/projects/${enc(id)}/runs/${enc(runId)}/lineage`),
+
+  /** Compare runs (`runIds` empty = the whole project), saying where they differ. */
+  compareRuns: (id: string, runIds: string[] = []) =>
+    request<ComparisonView>(
+      `/api/projects/${enc(id)}/compare${runIds.length ? `?runs=${enc(runIds.join(','))}` : ''}`,
+    ),
+
+  experiments: (id: string) => request<ExperimentView[]>(`/api/projects/${enc(id)}/experiments`),
+
+  createExperiment: (
+    id: string,
+    body: { name: string; description?: string; hypothesis?: string | null; runIds?: string[] },
+  ) =>
+    request<ExperimentView>(`/api/projects/${enc(id)}/experiments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  addRunsToExperiment: (id: string, experimentId: string, runIds: string[]) =>
+    request<ExperimentView>(`/api/projects/${enc(id)}/experiments/${enc(experimentId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ addRunIds: runIds }),
+    }),
+
+  removeRunFromExperiment: (id: string, experimentId: string, runId: string) =>
+    request<ExperimentView>(`/api/projects/${enc(id)}/experiments/${enc(experimentId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ removeRunId: runId }),
     }),
 
   /** Durable sampling history (newest first). Items are fetched per batch. */

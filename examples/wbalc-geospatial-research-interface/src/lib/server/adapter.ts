@@ -17,8 +17,11 @@ import type {
   QueryBatchView,
   QueryDecision,
   QueryHistoryEntry,
+  ComparisonView,
+  ExperimentView,
   QueryItemView,
   QuerySampleView,
+  RunLineageView,
   RunView,
   SceneView,
 } from '$lib/types';
@@ -28,10 +31,14 @@ import type {
   RsalLabel,
   RsalMapField,
   RsalMetrics,
+  RsalComparison,
+  RsalExperiment,
   RsalProject,
   RsalQueryBatch,
   RsalQueryItem,
   RsalQueryResponse,
+  RsalRunLineage,
+  RsalRunSummary,
   RsalScene,
   RsalTrainResponse,
 } from './rsal';
@@ -98,6 +105,9 @@ export function toDataset(dataset: RsalDataset): DatasetView {
     nodata: dataset.nodata,
     bounds: datasetBounds(geoContext(dataset)) ?? dataset.bounds,
     sizeBytes: dataset.size_bytes,
+    // Only what the engine recorded: an older upload has no content identity and
+    // must not be shown as if it did.
+    contentSha256: dataset.content_sha256 ?? null,
     createdAt: dataset.created_at,
     georeferenced: assessment.mode === 'map',
     georefReason: assessment.reason,
@@ -243,16 +253,97 @@ export function toMetrics(metrics: RsalMetrics): MetricsView {
   };
 }
 
-export function toRun(run: RsalTrainResponse): RunView {
+export function toRun(run: RsalTrainResponse | RsalRunSummary): RunView {
+  const summary = run as RsalRunSummary;
+  // A listed run carries its metrics inline; a fresh TrainResponse nests them.
+  const metrics = 'metrics' in run ? run.metrics : (summary as unknown as RsalMetrics);
   return {
     id: String(run.id),
     iteration: run.iteration,
     modelType: run.model_type,
     resolution: run.resolution,
     nSamples: run.n_samples,
-    checkpoint: run.checkpoint,
-    createdAt: run.metrics?.created_at ?? '',
-    metrics: toMetrics(run.metrics),
+    checkpoint: 'checkpoint' in run ? run.checkpoint : '',
+    createdAt: metrics?.created_at ?? '',
+    metrics: toMetrics(metrics),
+    // Lineage is reported, never assumed: a run without a manifest is 'legacy'.
+    manifestHash: summary.manifest_hash ?? null,
+    lineageStatus: summary.lineage_status ?? 'legacy',
+    experimentId: summary.experiment_id != null ? String(summary.experiment_id) : null,
+    checkpointSha256: summary.checkpoint_sha256 ?? null,
+  };
+}
+
+/** Shape a run's lineage record, keeping "unavailable" distinguishable from "ok". */
+export function toRunLineage(lineage: RsalRunLineage): RunLineageView {
+  const manifest = (lineage.manifest ?? {}) as {
+    labels?: { hash?: string };
+    inputs?: { dataset_id?: number; content_sha256?: string | null }[];
+    environment?: { revision?: string | null; python?: string | null };
+    config?: Record<string, unknown>;
+  };
+  return {
+    runId: String(lineage.run_id),
+    iteration: lineage.iteration,
+    experimentId: lineage.experiment_id != null ? String(lineage.experiment_id) : null,
+    status: lineage.lineage_status,
+    manifestHash: lineage.manifest_hash,
+    missing: lineage.missing ?? [],
+    notes: lineage.notes ?? [],
+    artifact: lineage.artifact
+      ? {
+          verified: Boolean(lineage.artifact.verified),
+          sha256: lineage.artifact.sha256 ?? null,
+          reason: lineage.artifact.reason ?? null,
+        }
+      : null,
+    labelSnapshotHash: manifest.labels?.hash ?? null,
+    inputs: (manifest.inputs ?? []).map((entry) => ({
+      datasetId: String(entry.dataset_id ?? ''),
+      sha256: entry.content_sha256 ?? null,
+    })),
+    environment: manifest.environment
+      ? {
+          revision: manifest.environment.revision ?? null,
+          python: manifest.environment.python ?? null,
+        }
+      : null,
+    config: manifest.config ?? {},
+  };
+}
+
+export function toComparison(comparison: RsalComparison): ComparisonView {
+  return {
+    experimentId: comparison.experiment_id != null ? String(comparison.experiment_id) : null,
+    runs: comparison.runs.map((row) => ({
+      runId: String(row.run_id),
+      iteration: row.iteration,
+      modelType: row.model_type,
+      accuracy: row.accuracy ?? null,
+      f1Macro: row.f1_macro ?? null,
+      nSamples: row.n_samples,
+      evaluation: row.evaluation ?? null,
+      status: row.lineage_status,
+      manifestHash: row.manifest_hash,
+      labelSnapshotHash: row.label_snapshot_hash,
+      inputHashes: row.input_hashes ?? {},
+      config: row.config ?? {},
+      environmentRevision: row.environment_revision,
+    })),
+    differences: comparison.differences ?? {},
+    comparable: Boolean(comparison.comparable),
+    caveats: comparison.caveats ?? [],
+  };
+}
+
+export function toExperiment(experiment: RsalExperiment): ExperimentView {
+  return {
+    id: String(experiment.id),
+    name: experiment.name,
+    description: experiment.description ?? '',
+    hypothesis: experiment.hypothesis ?? null,
+    runIds: (experiment.run_ids ?? []).map(String),
+    createdAt: experiment.created_at,
   };
 }
 

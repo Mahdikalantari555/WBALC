@@ -65,6 +65,8 @@ export interface DatasetView {
   nodata: number | null;
   bounds: Bounds | null;
   sizeBytes: number;
+  /** Content hash recorded at upload; null for a legacy upload. */
+  contentSha256: string | null;
   createdAt: string;
   /** False when the adapter has no usable CRS/affine: render in pixel space. */
   georeferenced: boolean;
@@ -128,6 +130,8 @@ export interface LabelView {
   createdAt: string;
   /** 'query' only when the engine recorded a query-item link; never inferred. */
   provenance: 'manual' | 'query';
+  /** Content hash of the raster the label belongs to, when the engine recorded it. */
+  contentHash?: string | null;
   /** Text the annotator submitted when it differed from the resolved class. */
   submittedClassName: string | null;
 }
@@ -164,6 +168,8 @@ export interface MetricsView {
   createdAt: string;
 }
 
+export type LineageStatus = 'legacy' | 'incomplete' | 'complete';
+
 export interface RunView {
   id: string;
   iteration: number;
@@ -173,6 +179,60 @@ export interface RunView {
   checkpoint: string;
   createdAt: string;
   metrics: MetricsView;
+  /** Short hash of the reproducibility manifest; null for a legacy run. */
+  manifestHash: string | null;
+  /** legacy = predates manifests; incomplete = manifest names what it lacks. */
+  lineageStatus: LineageStatus;
+  experimentId: string | null;
+  checkpointSha256: string | null;
+}
+
+export interface RunLineageView {
+  runId: string;
+  iteration: number;
+  experimentId: string | null;
+  status: LineageStatus;
+  manifestHash: string | null;
+  missing: string[];
+  notes: string[];
+  artifact: { verified: boolean; sha256: string | null; reason: string | null } | null;
+  labelSnapshotHash: string | null;
+  inputs: { datasetId: string; sha256: string | null }[];
+  environment: { revision: string | null; python: string | null } | null;
+  config: Record<string, unknown>;
+}
+
+export interface ComparisonRowView {
+  runId: string;
+  iteration: number;
+  modelType: string;
+  accuracy: number | null;
+  f1Macro: number | null;
+  nSamples: number;
+  evaluation: string | null;
+  status: LineageStatus;
+  manifestHash: string | null;
+  labelSnapshotHash: string | null;
+  inputHashes: Record<string, string | null>;
+  config: Record<string, unknown>;
+  environmentRevision: string | null;
+}
+
+export interface ComparisonView {
+  experimentId: string | null;
+  runs: ComparisonRowView[];
+  differences: Record<string, unknown[]>;
+  comparable: boolean;
+  caveats: string[];
+}
+
+export interface ExperimentView {
+  id: string;
+  name: string;
+  description: string;
+  hypothesis: string | null;
+  runIds: string[];
+  createdAt: string;
 }
 
 export interface QuerySampleView {

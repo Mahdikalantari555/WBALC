@@ -27,6 +27,8 @@ from .raster_service import (
     patch_validity,
     pixel_features,
 )
+from .lineage_service import build_run_manifest, file_identity
+from .label_service import latest_labels
 from .schema_service import SchemaConflict, compare_schemas
 from .taxonomy_service import binary_plan, taxonomy_snapshot
 from .training_service import TrainingError, save_checkpoint, train_model
@@ -209,6 +211,32 @@ async def run_training(
         )
     )
 
+    # Lineage: which exact bytes, which label *versions*, which config, which code.
+    # Built after the checkpoint is written so its hash is part of the record.
+    checkpoint_identity = await anyio.to_thread.run_sync(lambda: file_identity(checkpoint))
+    manifest = build_run_manifest(
+        project=project,
+        run_config={
+            "model_type": model_type,
+            "resolution": resolution,
+            "evaluation_strategy": evaluation_strategy,
+            "random_state": settings.random_state,
+            "test_size": test_size if test_size is not None else settings.test_size,
+            "params": params or {},
+            "hybrid": {k: v for k, v in (params or {}).items()},
+            "bands": bands,
+            "iteration": iteration,
+            "patch_size": patch_size,
+            "stride": stride,
+            "checkpoint_sha256": (checkpoint_identity or {}).get("sha256"),
+        },
+        datasets=[datasets[ds_id] for ds_id in sorted(by_dataset)],
+        labels=latest_labels(labels),
+        taxonomy=taxonomy,
+        band_schema=band_schema,
+        storage_dir=settings.storage_dir,
+    )
+
     run = TrainingRun(
         project_id=project.id,
         iteration=iteration,
@@ -222,6 +250,8 @@ async def run_training(
         trained_classes=[project.classes[i] for i in sorted(set(y_final))],
         n_samples=len(y_final),
         metrics=metrics,
+        manifest=manifest,
+        checkpoint_sha256=(checkpoint_identity or {}).get("sha256"),
         params={
             **(params or {}),
             "resolution": resolution,

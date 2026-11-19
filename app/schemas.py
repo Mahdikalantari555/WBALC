@@ -201,8 +201,11 @@ class DatasetOut(BaseModel):
     band_schema: dict | None = None
     created_at: datetime
     # Computed metadata for clients (frontend rendering / progress display).
-    size_bytes: int = 0
+    size_bytes: int | None = 0
     patch_grid: dict | None = None
+    # Content identity recorded while the bytes were written. None = legacy
+    # upload whose bytes were never hashed at registration time.
+    content_sha256: str | None = None
 
 
 class SceneOut(BaseModel):
@@ -473,6 +476,81 @@ class QueryBatchOut(QueryBatchSummary):
     items: list[QueryItemOut] = Field(default_factory=list)
 
 
+# ------------------------------------------------- lineage / experiments (Phase 3)
+class ExperimentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str = ""
+    hypothesis: str | None = None
+    config: dict[str, Any] | None = None
+
+
+class ExperimentUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    hypothesis: str | None = None
+    config: dict[str, Any] | None = None
+
+
+class ExperimentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    name: str
+    description: str
+    hypothesis: str | None = None
+    config: dict | None = None
+    created_at: datetime
+    updated_at: datetime
+    run_ids: list[int] = Field(default_factory=list)
+
+
+class ExperimentMembership(BaseModel):
+    training_run_ids: list[int] = Field(min_length=1)
+
+
+class RunLineageOut(BaseModel):
+    """What a run was actually made of, and what is missing from its record."""
+
+    run_id: int
+    iteration: int
+    experiment_id: int | None = None
+    # legacy | complete | incomplete
+    lineage_status: str
+    manifest: dict | None = None
+    manifest_hash: str | None = None
+    missing: list[str] = Field(default_factory=list)
+    artifact: dict | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class RunComparisonRow(BaseModel):
+    run_id: int
+    iteration: int
+    model_type: str
+    accuracy: float | None = None
+    f1_macro: float | None = None
+    n_samples: int
+    evaluation: str | None = None
+    lineage_status: str
+    manifest_hash: str | None = None
+    label_snapshot_hash: str | None = None
+    input_hashes: dict[str, str | None] = Field(default_factory=dict)
+    config: dict = Field(default_factory=dict)
+    environment_revision: str | None = None
+
+
+class RunComparisonOut(BaseModel):
+    experiment_id: int | None = None
+    project_id: int
+    runs: list[RunComparisonRow]
+    # Fields on which the compared runs genuinely differ. Scores are only
+    # presented as comparable when `comparable` is true.
+    differences: dict[str, list] = Field(default_factory=dict)
+    comparable: bool = False
+    caveats: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- training
 class TrainRequest(BaseModel):
     model_type: Literal["rf", "lightgbm"] = "rf"
@@ -513,6 +591,15 @@ class MetricsOut(BaseModel):
     held_out_groups: int | None = None
     per_class_iou: dict[str, float] = Field(default_factory=dict)
     created_at: datetime
+
+
+class RunSummaryOut(MetricsOut):
+    """A run plus its lineage pointer, so a list view can show completeness."""
+
+    manifest_hash: str | None = None
+    lineage_status: str = "legacy"
+    experiment_id: int | None = None
+    checkpoint_sha256: str | None = None
 
 
 class TrainResponse(BaseModel):
@@ -640,6 +727,7 @@ class ExportOut(BaseModel):
     training_run_id: int | None
     type: str
     region: dict | None
+    path: str
     created_at: datetime
     # Derived for the UI: which iteration produced it, whether a newer training
     # run exists, and the dataset filename so a list entry is self-describing.
@@ -647,6 +735,10 @@ class ExportOut(BaseModel):
     method: str | None = None
     stale: bool = False
     dataset_name: str | None = None
+    # Integrity, as recorded at write time and observed now.
+    sha256: str | None = None
+    size_bytes: int | None = None
+    integrity: str | None = None
 
 
 # ---------------------------------------------------------------- self-organizing map

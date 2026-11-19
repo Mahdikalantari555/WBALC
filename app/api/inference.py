@@ -44,6 +44,7 @@ from ..services.inference_service import (
 )
 from ..services.mask_service import StudyAreaError, study_area_mask
 from ..services.taxonomy_service import TaxonomyError, binary_hard, binary_plan, binary_probability
+from ..services.lineage_service import IntegrityError, file_identity, verify_artifact
 from ..services.pipeline import checkpoint_or_409, resolve_inference_contract
 from ..services.raster_service import (
     RasterError,
@@ -369,7 +370,13 @@ async def _run_inference(
         registered.append(("binary", binary_path))
     if binary_probability_path is not None:
         registered.append(("binary_probability", binary_probability_path))
+    # Artifact identity is recorded right after the atomic write, so a download
+    # can prove it is serving the bytes this run produced.
+    identities = await anyio.to_thread.run_sync(
+        lambda: {str(path): file_identity(path) for _, path in registered}
+    )
     for etype, path in registered:
+        identity = identities.get(str(path)) or {}
         session.add(
             Export(
                 project_id=project.id,
@@ -377,6 +384,8 @@ async def _run_inference(
                 training_run_id=run.id,
                 type=etype,
                 path=str(path),
+                sha256=identity.get("sha256"),
+                size_bytes=identity.get("size_bytes"),
                 region={**region.model_dump(), "method": method} if etype == "uncertainty" else region.model_dump(),
             )
         )
@@ -751,9 +760,20 @@ async def download(
 
         run = await session.get(TrainingRun, export.training_run_id)
         iteration = run.iteration if run is not None else None
+    # Integrity gate: an artifact whose bytes no longer match the checksum
+    # recorded at write time is never served as if it were the product.
+    try:
+        integrity = await anyio.to_thread.run_sync(
+            lambda: verify_artifact(export.path, export.sha256)
+        )
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     headers = {
         "X-RSAL-Export-Stale": "true" if stale else "false",
         "X-RSAL-Model-Iteration": str(iteration) if iteration is not None else "",
+        "X-RSAL-Export-Sha256": integrity.get("sha256") or "",
+        "X-RSAL-Export-Integrity": "verified" if integrity.get("verified") else "unverified",
     }
     return FileResponse(
         export.path,
@@ -982,11 +1002,19 @@ async def list_exports(
             training_run_id=e.training_run_id,
             type=e.type,
             region=e.region,
+            path=e.path,
             created_at=e.created_at,
             iteration=runs.get(e.training_run_id),
             method=(e.region or {}).get("method"),
             stale=bool(latest is not None and latest.id != e.training_run_id),
             dataset_name=names.get(e.dataset_id),
+            sha256=e.sha256,
+            size_bytes=e.size_bytes,
+            integrity=(
+                "verified"
+                if e.sha256 and Path(e.path).exists() and file_identity(e.path) and file_identity(e.path)["sha256"] == e.sha256
+                else ("missing" if not Path(e.path).exists() else ("unverified" if not e.sha256 else "modified"))
+            ),
         )
         for e in exports
     ]

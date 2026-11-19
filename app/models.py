@@ -35,6 +35,9 @@ class Project(Base):
     datasets: Mapped[list["Dataset"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     labels: Mapped[list["Label"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     training_runs: Mapped[list["TrainingRun"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    experiments: Mapped[list["Experiment"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     exports: Mapped[list["Export"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     query_batches: Mapped[list["QueryBatch"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -79,6 +82,8 @@ class Scene(Base):
     native_band_resolutions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     acquisition_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     product_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -103,6 +108,11 @@ class Dataset(Base):
     # Ordered band identity (names/sensor/declared flag + digest). NULL means the
     # raster carries no declarable identity: never backfilled with guesses.
     band_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Content identity of the stored bytes, hashed while they were being written.
+    # NULL = legacy upload: reported as unavailable, never recomputed as if it had
+    # been recorded at registration time.
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="datasets")
@@ -149,9 +159,46 @@ class TrainingRun(Base):
     n_samples: Mapped[int] = mapped_column(Integer)
     metrics: Mapped[dict] = mapped_column(JSON)
     params: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Immutable reproducibility manifest (inputs, label versions, config,
+    # environment). NULL = run predates manifests: reported incomplete.
+    manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    checkpoint_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    experiment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("experiments.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="training_runs")
+    experiment: Mapped["Experiment | None"] = relationship(back_populates="runs")
+
+
+class Experiment(Base):
+    """A named group of runs kept for comparison.
+
+    Membership is an association on the *run* (`experiments` never rewrites a run
+    manifest or a score); adding a run to an experiment cannot change what the run
+    recorded.
+    """
+
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    hypothesis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The question this comparison is meant to answer, plus the config the
+    # experiment was declared with. Snapshotted, never recomputed from the runs.
+    config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    project: Mapped[Project] = relationship(back_populates="experiments")
+    runs: Mapped[list["TrainingRun"]] = relationship(back_populates="experiment")
 
 
 class QueryBatch(Base):
@@ -238,6 +285,9 @@ class Export(Base):
     type: Mapped[str] = mapped_column(String(20))  # hard | probability | som
     path: Mapped[str] = mapped_column(String(1024))
     region: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Checksum recorded right after the atomic write; downloads verify it.
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="exports")

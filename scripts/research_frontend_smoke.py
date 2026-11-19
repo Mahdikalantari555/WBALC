@@ -415,6 +415,79 @@ def main() -> None:
             == engine_metrics["evaluation"].startswith("insufficient_train"),
             f"engine evaluation={engine_metrics['evaluation']}",
         )
+
+        # ------------------------------- content identity + manifests (Phase 3)
+        dataset_view = next(d for d in client.get(f"/api/projects/{pid}/datasets").json())
+        check(
+            "upload records a content hash the adapter exposes",
+            isinstance(dataset_view["contentSha256"], str) and len(dataset_view["contentSha256"]) == 64,
+            str(dataset_view["contentSha256"])[:12],
+        )
+        check(
+            "run list reports lineage completeness",
+            run["lineageStatus"] == "complete" and len(run["manifestHash"]) == 64,
+            f"{run['lineageStatus']}/{str(run['manifestHash'])[:8]}",
+        )
+        lineage = client.get(f"/api/projects/{pid}/runs/{run['id']}/lineage").json()
+        check(
+            "run lineage names its inputs and label snapshot",
+            lineage["inputs"][0]["sha256"] == dataset_view["contentSha256"]
+            and lineage["labelSnapshotHash"] is not None
+            and lineage["status"] == "complete",
+            f"{lineage['status']}/{str(lineage['labelSnapshotHash'])[:8]}",
+        )
+        check(
+            "checkpoint artifact verifies against its recorded checksum",
+            lineage["artifact"]["verified"] is True,
+            str(lineage["artifact"]),
+        )
+        check(
+            "manifest carries environment + config",
+            lineage["environment"]["python"] and lineage["config"]["resolution"] == "patch",
+            str(lineage["environment"]),
+        )
+        check(
+            "manifest exposes no machine-local paths",
+            "/home/" not in str(lineage) and "storage/" not in str(lineage),
+        )
+
+        # The adapter's exports route streams a file, so artifact metadata is read
+        # from the engine (which is also where the checksum is recorded).
+        materialised = client.get(f"/api/projects/{pid}/exports?type=hard&dataset={did}")
+        exports = direct.get(f"/projects/{pid}/exports").json()
+        check(
+            "export download streams the artifact",
+            materialised.status_code == 200
+            and materialised.headers["content-type"].startswith("image/tiff"),
+            str(materialised.status_code),
+        )
+        check(
+            "export records its checksum and integrity verdict",
+            len(exports) > 0 and len(exports[0]["sha256"]) == 64 and exports[0]["integrity"] == "verified",
+            str(exports[0]["integrity"] if exports else None),
+        )
+
+        experiment = client.post(
+            f"/api/projects/{pid}/experiments",
+            json={"name": "Smoke experiment", "runIds": [run["id"]]},
+        )
+        check(
+            "experiment groups a run without touching it",
+            experiment.status_code == 201 and experiment.json()["runIds"] == [run["id"]],
+            experiment.text[:120],
+        )
+        exp_id = experiment.json()["id"]
+        comparison = client.get(f"/api/projects/{pid}/compare?runs={run['id']}").json()
+        check(
+            "single-run comparison refuses to claim comparability",
+            comparison["comparable"] is False and comparison["caveats"],
+            str(comparison["caveats"])[:80],
+        )
+        detail = client.get(f"/api/projects/{pid}/experiments/{exp_id}").json()
+        check(
+            "experiment detail carries its membership",
+            detail["experiment"]["runIds"] == [run["id"]],
+        )
         check(
             "evaluation protocol is exposed",
             run["metrics"]["evaluationStrategy"] == "random" and run["metrics"]["nTest"] is not None,

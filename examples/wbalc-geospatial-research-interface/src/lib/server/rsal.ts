@@ -174,6 +174,8 @@ export interface RsalDataset {
   bounds: [number, number, number, number] | null;
   created_at: string;
   size_bytes: number;
+  /** Content hash recorded while the bytes were written; null = legacy upload. */
+  content_sha256?: string | null;
   /**
    * Ordered band identity the file declares (`declared: false` when it names no
    * bands). Optional: an older engine omits it, and "unknown" must not be
@@ -370,6 +372,68 @@ export interface RsalQueryBatch {
   created_at: string;
   decisions: Record<string, number>;
   items?: RsalQueryItem[];
+}
+
+/** A run as listed by `/runs`, with its lineage pointer. */
+export interface RsalRunSummary extends RsalMetrics {
+  manifest_hash?: string | null;
+  lineage_status?: 'legacy' | 'incomplete' | 'complete';
+  experiment_id?: number | null;
+  checkpoint_sha256?: string | null;
+}
+
+export interface RsalRunLineage {
+  run_id: number;
+  iteration: number;
+  experiment_id: number | null;
+  lineage_status: 'legacy' | 'incomplete' | 'complete';
+  manifest: Record<string, unknown> | null;
+  manifest_hash: string | null;
+  missing: string[];
+  artifact: {
+    verified?: boolean;
+    sha256?: string;
+    reason?: string;
+    path_name?: string;
+  } | null;
+  notes: string[];
+}
+
+export interface RsalComparisonRow {
+  run_id: number;
+  iteration: number;
+  model_type: string;
+  accuracy: number | null;
+  f1_macro: number | null;
+  n_samples: number;
+  evaluation: string | null;
+  lineage_status: 'legacy' | 'incomplete' | 'complete';
+  manifest_hash: string | null;
+  label_snapshot_hash: string | null;
+  input_hashes: Record<string, string | null>;
+  config: Record<string, unknown>;
+  environment_revision: string | null;
+}
+
+export interface RsalComparison {
+  experiment_id: number | null;
+  project_id: number;
+  runs: RsalComparisonRow[];
+  differences: Record<string, unknown[]>;
+  comparable: boolean;
+  caveats: string[];
+}
+
+export interface RsalExperiment {
+  id: number;
+  project_id: number;
+  name: string;
+  description: string;
+  hypothesis: string | null;
+  config: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  run_ids: number[];
 }
 
 export interface RsalTrainResponse {

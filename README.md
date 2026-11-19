@@ -118,9 +118,11 @@ any future pixel-wise operation; no scene is assumed to be aligned.
 The database migration runner applies versioned additive migrations at startup.
 Migration 1 adds project study-area/classification fields and creates the scenes
 table; 2 adds `datasets.band_schema`, 3 adds `projects.taxonomy`, 4 adds
-`labels.submitted_class_name`, 5 adds `training_runs.trained_classes` and 6 adds
-`query_batches`/`query_items` plus the label → query-item link. All are additive,
-idempotent and preserve existing RSAL rows. A `NULL` band schema
+`labels.submitted_class_name`, 5 adds `training_runs.trained_classes`, 6 adds
+`query_batches`/`query_items` plus the label → query-item link, and 7 adds the
+lineage columns (`content_sha256`, `size_bytes`, `sha256`, `manifest`,
+`checkpoint_sha256`, `experiment_id`) plus the `experiments` table. All are
+additive, idempotent and preserve existing RSAL rows. A `NULL` band schema
 means "undeclared": band identity is never backfilled from filenames or a sensor
 default, so legacy datasets keep requiring an explicit override to be used.
 
@@ -289,6 +291,34 @@ this is not an implicit WGS84 conversion. Point labels outside the selected
 raster are rejected. Polygon labels must be closed finite rings and overlap the
 dataset. `LICENSE` applies to repository code only; third-party components keep
 their own licenses, which require a separate redistribution review.
+
+## Reproducibility: content identity, manifests, artifact integrity
+
+A score is only meaningful next to the data that produced it.
+
+- **Inputs have content identity.** Dataset and scene uploads record the SHA-256
+  and size of the exact bytes written. A legacy upload has `null` and is reported
+  as "not recorded", never hashed after the fact.
+- **Every new run carries a manifest** (`run-manifest-v1`): per-input content
+  hashes, grid and band schema, the exact **label versions** trained, the taxonomy
+  snapshot, the full configuration (model, resolution, seed, split protocol,
+  bands), package versions and the code revision. Serialisation is canonical
+  (sorted keys, compact, no NaN), so equal content always hashes equally.
+- **Manifests exclude secrets and machine paths** — absolute paths shrink to a
+  basename, `token`/`password`/`api_key` keys are dropped.
+- **Artifacts are verified.** Checkpoints and exports record a checksum at write
+  time; downloads verify it and answer `X-RSAL-Export-Integrity`. A modified or
+  missing artifact is a 409 that names the problem, not a silent download.
+- **Runs are grouped, not rewritten.** Experiments hold run membership only;
+  creating, joining, leaving or deleting an experiment never alters a manifest or
+  a metric.
+- **Comparisons state their own validity.** `GET /projects/{id}/compare` lists
+  metrics beside the fields that differ (inputs, label snapshot, config, protocol,
+  environment) and sets `comparable: false` when the runs are not a controlled
+  comparison — including when a run predates manifests.
+- **No bitwise claim.** The environment is recorded so a rerun can be explained;
+  identical results across different library or hardware versions are not
+  promised.
 
 ## Sampling history and annotation provenance
 

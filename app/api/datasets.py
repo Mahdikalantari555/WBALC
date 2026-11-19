@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import anyio
@@ -32,7 +33,10 @@ def dataset_out(dataset: Dataset, settings: Settings) -> DatasetOut:
     """DatasetOut enriched with computed size and patch-grid metadata."""
     out = DatasetOut.model_validate(dataset)
     path = Path(dataset.path)
-    out.size_bytes = path.stat().st_size if path.exists() else 0
+    # `size_bytes` is the recorded size of the bytes at registration; it is not
+    # recomputed as "whatever is on disk now".
+    if dataset.size_bytes is None:
+        out.size_bytes = path.stat().st_size if path.exists() else 0
     grid = make_grid(dataset.height, dataset.width, settings.patch_size, settings.resolved_stride())
     rows, cols = grid.shape
     out.patch_grid = {
@@ -70,12 +74,16 @@ async def upload_geotiff(
     dest = dest_dir / unique_name(filename)
 
     size = 0
+    # The hash is computed from the same bytes that are written, so it describes
+    # the stored file rather than a second read of it.
+    digest = hashlib.sha256()
     try:
         async with await anyio.open_file(dest, "wb") as out:
             while chunk := await file.read(CHUNK):
                 size += len(chunk)
                 if size > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail="Upload exceeds size limit")
+                digest.update(chunk)
                 await out.write(chunk)
     except HTTPException:
         dest.unlink(missing_ok=True)
@@ -119,6 +127,8 @@ async def upload_geotiff(
         project_id=project_id,
         filename=filename,
         path=str(dest),
+        content_sha256=digest.hexdigest(),
+        size_bytes=size,
         band_schema=build_band_schema(
             band_count=meta["bands"],
             band_names=declared_names,

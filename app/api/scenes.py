@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -135,12 +136,14 @@ async def register_scene(
 
     destination = (project_dir(settings, "uploads", project_id) / unique_name(filename)).resolve()
     size = 0
+    digest = hashlib.sha256()
     try:
         async with await anyio.open_file(destination, "wb") as output:
             while chunk := await file.read(CHUNK_BYTES):
                 size += len(chunk)
                 if size > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail="Upload exceeds configured size limit")
+                digest.update(chunk)
                 await output.write(chunk)
     except HTTPException:
         destination.unlink(missing_ok=True)
@@ -169,6 +172,8 @@ async def register_scene(
         product_level=product_level,
         source_filename=filename,
         storage_path=str(destination),
+        content_sha256=digest.hexdigest(),
+        size_bytes=size,
         polarization=polarizations,
         acquisition_mode=acquisition_mode,
         orbit_direction=orbit_direction,
