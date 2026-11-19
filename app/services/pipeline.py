@@ -29,7 +29,11 @@ from .raster_service import (
 )
 from .lineage_service import build_run_manifest, file_identity
 from .label_service import latest_labels
-from .schema_service import SchemaConflict, compare_schemas
+from .schema_service import (
+    SchemaConflict,
+    classification_band_selection,
+    compare_schemas,
+)
 from .taxonomy_service import binary_plan, taxonomy_snapshot
 from .training_service import TrainingError, save_checkpoint, train_model
 
@@ -104,12 +108,15 @@ async def run_training(
         {ds_id: datasets[ds_id] for ds_id in sorted(by_dataset)},
         accept_unverified_schema,
     )
+    source_bands = datasets[min(by_dataset)].bands
+    feature_selection = classification_band_selection(band_schema, source_bands)
+    predictor_band_indices = feature_selection["indices"]
 
     def _extract() -> tuple[np.ndarray, list[int], int, np.ndarray]:
         X_parts: list[np.ndarray] = []
         y_out: list[int] = []
         group_out: list[str] = []
-        bands = 0
+        bands = source_bands
         for ds_id, items in by_dataset.items():
             ds = datasets[ds_id]
             if resolution == "pixel":
@@ -121,7 +128,7 @@ async def run_training(
                 with rasterio.open(ds.path) as src:
                     # Checked before any block is read, so the refusal is cheap.
                     check_element_budget(
-                        src.count,
+                        len(predictor_band_indices),
                         src.height,
                         src.width,
                         settings.max_raster_elements,
@@ -132,7 +139,12 @@ async def run_training(
                         row0, col0 = block_y * 256, block_x * 256
                         row1, col1 = min(src.height, row0 + 256), min(src.width, col0 + 256)
                         window = Window(col0, row0, col1 - col0, row1 - row0)
-                        block = src.read(window=window, masked=True, out_dtype="float32").filled(np.nan)
+                        block = src.read(
+                            indexes=[index + 1 for index in predictor_band_indices],
+                            window=window,
+                            masked=True,
+                            out_dtype="float32",
+                        ).filled(np.nan)
                         features, valid = pixel_features(block)
                         block_width = col1 - col0
                         for row, col, target in samples:
@@ -142,8 +154,12 @@ async def run_training(
                                 y_out.append(target)
                                 group_out.append(f"{ds_id}:{block_y}:{block_x}")
             else:
-                arr = load_raster(ds.path, ds.nodata, settings.max_raster_elements)
-                bands = arr.shape[0]
+                arr = load_raster(
+                    ds.path,
+                    ds.nodata,
+                    settings.max_raster_elements,
+                    band_indexes=predictor_band_indices,
+                )
                 grid = grids[ds_id]
                 feats = patch_features(arr, grid)
                 patch_valid = patch_validity(arr, grid)
@@ -208,6 +224,7 @@ async def run_training(
             resolution=resolution,
             band_schema=band_schema,
             taxonomy=taxonomy,
+            predictor_band_indices=predictor_band_indices,
         )
     )
 
@@ -225,6 +242,10 @@ async def run_training(
             "params": params or {},
             "hybrid": {k: v for k, v in (params or {}).items()},
             "bands": bands,
+            "predictor_band_indices": predictor_band_indices,
+            "predictor_band_names": feature_selection["names"],
+            "excluded_band_indices": feature_selection["excluded_indices"],
+            "excluded_band_names": feature_selection["excluded_names"],
             "iteration": iteration,
             "patch_size": patch_size,
             "stride": stride,
@@ -259,7 +280,11 @@ async def run_training(
             "random_state": settings.random_state,
             "test_size": test_size if test_size is not None else settings.test_size,
             "bands": bands,
-            "feature_config": "per-pixel band values" if resolution == "pixel" else "per-band mean/std/min/max patch summary",
+            "predictor_band_indices": predictor_band_indices,
+            "predictor_band_names": feature_selection["names"],
+            "excluded_band_indices": feature_selection["excluded_indices"],
+            "excluded_band_names": feature_selection["excluded_names"],
+            "feature_config": "per-pixel predictor-band values" if resolution == "pixel" else "per-predictor-band mean/std/min/max patch summary",
             "dataset_ids": sorted(by_dataset),
             "band_schema": band_schema,
             "band_schema_verified": bool(band_schema.get("declared")),
@@ -351,8 +376,14 @@ def resolve_inference_contract(
         expected_band_count=checkpoint["bands"],
         actual_band_count=dataset.bands,
     )
+    feature_record = {
+        "predictor_band_indices": checkpoint.get("predictor_band_indices", list(range(checkpoint["bands"]))),
+        "predictor_band_names": checkpoint.get("predictor_band_names") or [],
+        "excluded_band_indices": checkpoint.get("excluded_band_indices") or [],
+        "excluded_band_names": checkpoint.get("excluded_band_names") or [],
+    }
     if verified:
-        return {"verified": True, "reason": reason, "override": False}
+        return {"verified": True, "reason": reason, "override": False, **feature_record}
     if not accept_unverified:
         raise HTTPException(
             status_code=409,
@@ -366,6 +397,7 @@ def resolve_inference_contract(
         "verified": False,
         "reason": f"{reason} (overridden by the caller)",
         "override": True,
+        **feature_record,
     }
 
 
@@ -386,6 +418,15 @@ def checkpoint_or_409(run: TrainingRun) -> dict:
             status_code=409,
             detail=f"Training run {run.iteration} has an unusable checkpoint: {exc} Retrain the project.",
         ) from exc
+    if checkpoint.get("legacy_scl_predictor"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Training run {run.iteration} was trained with SCL as a model input. "
+                "SCL is QA data and cannot be used for classification; retrain the project "
+                "with the current feature selection before inference."
+            ),
+        )
     if checkpoint.get("classes") != list(run.classes):
         raise HTTPException(
             status_code=409,

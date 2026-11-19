@@ -64,11 +64,60 @@ def test_stack_resamples_native_sentinel2_resolutions_to_finest_grid(client, pro
         assert src.tags(3)['WBALC_RESAMPLING'] == 'nearest'
 
 
-def test_stack_rejects_ambiguous_shifted_multiband_and_merged_inputs_without_writes(client, project):
+def test_scl_description_variants_always_use_nearest_resampling():
+    from rasterio.enums import Resampling
+
+    from app.api.raster_stack import _resampling_for
+
+    for name in ("SCL_20m", "scl60m", "scene_classification_layer"):
+        assert _resampling_for(name, "bilinear") == Resampling.nearest
+
+
+def test_stack_crops_pixel_aligned_shifted_bands_to_their_common_overlap(client, project):
+    root = f'/projects/{project["id"]}'
+    result = client.post(
+        f'{root}/raster-stack',
+        data={'sensor': 'Sentinel-1', 'band_names': '["vv", "vh"]'},
+        files=[
+            ('files', ('vv.tif', band(10))),
+            ('files', ('vh.tif', band(40, x=500010))),
+        ],
+    )
+    assert result.status_code == 201, result.text
+    dataset = result.json()
+    raw = client.get(f'{root}/dataset/{dataset["id"]}/file')
+    with rasterio.open(io.BytesIO(raw.content)) as src:
+        assert (src.width, src.height) == (63, 64)
+        assert src.transform == from_origin(500010, 4650000, 10, 10)
+        assert list(src.read()[:, 1, 1]) == [10, 40]
+        # The output only represents the common footprint; native sources stay untouched.
+
+
+def test_stack_crops_nested_resolution_inputs_to_their_common_overlap(client, project):
+    root = f'/projects/{project["id"]}'
+    result = client.post(
+        f'{root}/raster-stack',
+        data={'sensor': 'Sentinel-2', 'band_names': '["blue", "swir16"]'},
+        files=[
+            ('files', ('blue.tif', band(10))),
+            ('files', ('swir16.tif', band(20, x=500020, width=32, height=32, resolution=20))),
+        ],
+    )
+    assert result.status_code == 201, result.text
+    raw = client.get(f'{root}/dataset/{result.json()["id"]}/file')
+    with rasterio.open(io.BytesIO(raw.content)) as src:
+        assert (src.width, src.height) == (62, 64)
+        assert src.transform == from_origin(500020, 4650000, 10, 10)
+        assert src.tags(2)['WBALC_RESAMPLED'] == 'true'
+        assert src.tags(2)['WBALC_RESAMPLING'] == 'bilinear'
+
+
+def test_stack_rejects_duplicate_half_pixel_nonoverlap_multiband_and_merged_inputs(client, project):
     root = f'/projects/{project["id"]}'
     cases = [
         (['vv','VV'], [('vv.tif', band(10)), ('vh.tif', band(40))], 'unique'),
-        (['vv','vh'], [('vv.tif', band(10)), ('vh.tif', band(40, x=500010))], 'identical footprint'),
+        (['vv','vh'], [('vv.tif', band(10)), ('vh.tif', band(40, x=500005))], 'fractional source pixel'),
+        (['vv','vh'], [('vv.tif', band(10)), ('vh.tif', band(40, x=501000))], 'do not overlap'),
         (['vv','vh'], [('vv.tif', band(10)), ('vh.tif', band(40, count=2))], 'one band'),
         (['vv','vh'], [('vv.tif', band(10)), ('merged.tif', band(40))], 'Merged/multiband'),
     ]
@@ -76,6 +125,21 @@ def test_stack_rejects_ambiguous_shifted_multiband_and_merged_inputs_without_wri
         result = client.post(f'{root}/raster-stack', data={'sensor': 'Sentinel-1', 'band_names': json.dumps(names)},
                              files=[('files', (filename, content)) for filename, content in uploads])
         assert result.status_code == 422 and message in result.text, result.text
+    assert client.get(f'{root}/dataset').json() == []
+
+
+def test_stack_rejects_coarse_grid_half_pixel_origin(client, project):
+    root = f'/projects/{project["id"]}'
+    result = client.post(
+        f'{root}/raster-stack',
+        data={'sensor': 'Sentinel-2', 'band_names': '["blue", "swir16"]'},
+        files=[
+            ('files', ('blue.tif', band(10))),
+            ('files', ('swir16.tif', band(20, x=500010, width=32, height=32, resolution=20))),
+        ],
+    )
+    assert result.status_code == 422
+    assert 'fractional source pixel' in result.text
     assert client.get(f'{root}/dataset').json() == []
 
 

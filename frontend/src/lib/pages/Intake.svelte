@@ -20,6 +20,7 @@
   const saveClasses = () => { classDraft = null; writeDraft('classes', [...classRows]); };
   const saveBands = () => { bandDraft = null; if (bandKey) writeDraft(bandKey, [...inspectedNames]); };
   let inspectedNames = $state<string[]>([]);
+  let bandNamesConfirmed = $state(false);
   let inspecting = $state(false);
   let inspection = 0;
   let kind = $state<'dataset' | 'scene'>('dataset');
@@ -77,6 +78,7 @@
     const token = ++inspection;
     const projectId = workspace.project?.id;
     inspectedNames = [];
+    bandNamesConfirmed = false;
     bandDraft = null;
     bandKey = file && workspace.project ? mappingKey(workspace.project.id, 'tiff', [file]) : '';
     uploadError = '';
@@ -114,6 +116,7 @@
     if (mode === 'scene') fields.set('acquisition_datetime', `${fields.get('date')}T00:00:00Z`);
     fields.delete('date');
     if (!validNames(inspectedNames)) { uploadError = t('batch.namesInvalid'); return; }
+    if (!bandNamesConfirmed) { uploadError = t('intake.confirmBandsRequired'); return; }
     fields.set('band_names', inspectedNames.map(name => name.trim().toLowerCase()).join(','));
     const submittedBandKey = bandKey;
     uploading = true;
@@ -123,9 +126,15 @@
         form.reset();
         await tick();
         inspectedNames = [];
+        bandNamesConfirmed = false;
         uploaded = { id, rasterId: String(uploadedInput.id), name: file.name, kind: mode };
         await workspace.reload();
-        if (mode === 'dataset' && workspace.project?.id === id) workspace.selectDataset(uploadedInput.id);
+        if (workspace.project?.id === id) {
+          const queryDataset = mode === 'dataset'
+            ? uploadedInput.id
+            : workspace.datasets.at(-1)?.id;
+          if (queryDataset) workspace.selectDataset(queryDataset);
+        }
       }
       if (submittedBandKey) writeDraft(submittedBandKey, null);
       bandDraft = null;
@@ -209,16 +218,17 @@
             {#if inspectedNames.length}
               <div class="band-grid">
                 {#each inspectedNames as _, index}
-                  <label class="field">{t('batch.bandName', { index: index + 1 })}<input class="input" dir="ltr" required bind:value={inspectedNames[index]} oninput={() => { void tick().then(saveBands); }} /></label>
+                  <label class="field">{t('batch.bandName', { index: index + 1 })}<input class="input" dir="ltr" required bind:value={inspectedNames[index]} oninput={() => { bandNamesConfirmed = false; void tick().then(saveBands); }} /></label>
                 {/each}
               </div>
+              <label class="review-check"><input type="checkbox" bind:checked={bandNamesConfirmed} disabled={!validNames(inspectedNames) || inspecting} /> {t('intake.confirmBands')}</label>
             {/if}
             <div class="form-actions">
-              <button class="button primary" type="submit" disabled={inspecting || !inspectedNames.length}><Upload size={14} />{uploading ? t('intake.uploading') : t('intake.upload')}</button>
+              <button class="button primary" type="submit" disabled={inspecting || !validNames(inspectedNames) || !bandNamesConfirmed}><Upload size={14} />{uploading ? t('intake.uploading') : t('intake.upload')}</button>
             </div>
           </fieldset>
           {#if !inspecting && !inspectedNames.length && !uploadError}<p class="help">{t('ux.chooseRaster')}</p>{/if}
-          {#if bandDraft}<button type="button" class="button" onclick={() => { if (bandDraft) inspectedNames = bandDraft; saveBands(); }}>{t('ux.restore')}</button>{/if}
+          {#if bandDraft}<button type="button" class="button" onclick={() => { if (bandDraft) inspectedNames = bandDraft; bandNamesConfirmed = false; saveBands(); }}>{t('ux.restore')}</button>{/if}
           {#if uploadError}<p class="form-error" role="alert">{uploadError}</p>{/if}
         </form>
       {/key}
@@ -254,6 +264,8 @@
   .intro p { margin-block-start: 4px; overflow-wrap: anywhere; }
   fieldset { display: grid; min-inline-size: 0; gap: 14px; }
   .field { font-size: 12px; min-width: 0; }
+  .review-check { display: flex; gap: 8px; align-items: center; min-block-size: 32px; font-size: 12px; }
+  .review-check input { accent-color: var(--accent); flex: none; }
   .input, .select { width: 100%; min-width: 0; }
   .file { height: auto; padding-block: 7px; }
   .file::file-selector-button { padding: 4px 8px; margin-inline-end: 8px; color: var(--ink); background: var(--control); border: 1px solid var(--line); border-radius: 4px; }

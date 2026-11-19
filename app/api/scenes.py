@@ -13,9 +13,10 @@ from fastapi import APIRouter, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
-from ..models import Scene
+from ..models import Dataset, Scene
 from ..schemas import SceneOut, SceneSpatialOut
 from ..services.raster_service import RasterError, extract_scene_metadata
+from ..services.schema_service import build_band_schema
 from ..services.raster_preview import PreviewError, inspect_raster_pixel, render_raster_preview
 from ..storage import project_dir, unique_name
 from .deps import SessionDep, SettingsDep, get_project
@@ -186,6 +187,20 @@ async def register_scene(
             )
         raster_metadata["band_names"] = named_bands
 
+    schema_names = named_bands or raster_metadata.get("band_names")
+    schema_source = "request" if named_bands is not None else "scene-band-descriptions"
+    if (
+        not schema_names
+        or len(schema_names) != raster_metadata["band_count"]
+        or not all(isinstance(name, str) and name.strip() for name in schema_names)
+    ):
+        if polarizations and len(polarizations) == raster_metadata["band_count"]:
+            schema_names = polarizations
+            schema_source = "scene-polarization"
+        else:
+            schema_names = None
+            schema_source = "scene-raster-metadata"
+
     scene = Scene(
         project_id=project_id,
         acquisition_datetime=acquired,
@@ -208,7 +223,37 @@ async def register_scene(
         uploaded_at=datetime.now(timezone.utc),
         **raster_metadata,
     )
+    nodata_values = raster_metadata["nodata_values"]
+    dataset_nodata = (
+        nodata_values[0]
+        if nodata_values and all(value == nodata_values[0] for value in nodata_values)
+        else None
+    )
+    active_learning_dataset = Dataset(
+        project_id=project_id,
+        filename=filename,
+        path=str(destination),
+        crs=raster_metadata["crs"],
+        transform=raster_metadata["transform"],
+        width=raster_metadata["width"],
+        height=raster_metadata["height"],
+        bands=raster_metadata["band_count"],
+        dtype=raster_metadata["band_dtypes"][0],
+        nodata=dataset_nodata,
+        bounds=raster_metadata["bounds"],
+        band_schema=build_band_schema(
+            band_count=raster_metadata["band_count"],
+            band_names=schema_names,
+            sensor=sensor,
+            source=schema_source,
+        ),
+        content_sha256=digest.hexdigest(),
+        size_bytes=size,
+    )
+    # A scene also becomes a queryable raster dataset. Both records intentionally
+    # reference the same immutable upload; deletion checks the remaining owner.
     session.add(scene)
+    session.add(active_learning_dataset)
     try:
         await session.commit()
         await session.refresh(scene)
@@ -339,5 +384,12 @@ async def delete_scene(project_id: int, scene_id: int, session: SessionDep) -> R
     source_path = Path(scene.storage_path)
     await session.delete(scene)
     await session.commit()
-    source_path.unlink(missing_ok=True)
+    dataset_reference = await session.execute(
+        select(Dataset.id).where(Dataset.path == str(source_path)).limit(1)
+    )
+    scene_reference = await session.execute(
+        select(Scene.id).where(Scene.storage_path == str(source_path)).limit(1)
+    )
+    if dataset_reference.scalar_one_or_none() is None and scene_reference.scalar_one_or_none() is None:
+        source_path.unlink(missing_ok=True)
     return Response(status_code=204)

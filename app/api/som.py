@@ -29,7 +29,8 @@ from ..services.inference_service import (
     validate_export_grid,
 )
 from ..services.label_service import build_training_targets
-from ..services.pipeline import checkpoint_or_409
+from ..services.pipeline import checkpoint_or_409, resolve_inference_contract
+from ..services.schema_service import SchemaConflict, classification_band_selection
 from ..services.raster_service import (
     RasterError,
     load_raster,
@@ -72,13 +73,17 @@ async def _run_som(
     model_iteration: int | None = None
     model_note: str | None = None
     if run is not None and Path(run.checkpoint_path).exists():
-        loaded = checkpoint_or_409(run)
-        if loaded.get("bands") != dataset.bands:
+        try:
+            loaded = checkpoint_or_409(run)
+        except HTTPException as exc:
+            loaded = None
+            model_note = f"Latest model was not used for supervised SOM annotations: {exc.detail}"
+        if loaded is not None and loaded.get("bands") != dataset.bands:
             model_note = (
                 f"Model expects {loaded['bands']} bands but dataset {dataset.id} has "
                 f"{dataset.bands}; no supervised annotations are shown."
             )
-        elif loaded.get("resolution") != "patch":
+        elif loaded is not None and loaded.get("resolution") != "patch":
             # Patch embeddings cannot be scored by a pixel-feature model; saying so
             # is better than a 500 or a silently wrong overlay.
             model_note = (
@@ -86,9 +91,29 @@ async def _run_som(
                 f"{loaded.get('resolution')} resolution and cannot annotate patch "
                 "cells; retrain with resolution='patch' to show predictions."
             )
-        else:
-            checkpoint = loaded
-            model_iteration = run.iteration
+        elif loaded is not None:
+            try:
+                resolve_inference_contract(run, loaded, dataset, accept_unverified=False)
+            except HTTPException as exc:
+                model_note = f"Model bands cannot be verified for this dataset: {exc.detail}"
+            else:
+                checkpoint = loaded
+                model_iteration = run.iteration
+
+    try:
+        feature_selection = (
+            {
+                "indices": checkpoint["predictor_band_indices"],
+                "names": checkpoint.get("predictor_band_names") or [],
+                "excluded_indices": checkpoint.get("excluded_band_indices") or [],
+                "excluded_names": checkpoint.get("excluded_band_names") or [],
+            }
+            if checkpoint is not None
+            else classification_band_selection(dataset.band_schema, dataset.bands)
+        )
+    except SchemaConflict as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    feature_band_indices = feature_selection["indices"]
 
     patch_size = payload.patch_size or (
         checkpoint["patch_size"] if checkpoint else settings.patch_size
@@ -111,7 +136,12 @@ async def _run_som(
     all_sids = [sample_id(dataset.id, r, c) for r in range(n_rows) for c in range(n_cols)]
 
     def _compute() -> SomResponse:
-        arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+        arr = load_raster(
+            dataset.path,
+            dataset.nodata,
+            settings.max_raster_elements,
+            band_indexes=feature_band_indices,
+        )
         X_all = patch_features(arr, grid)
         valid = patch_validity(arr, grid)
         valid_idx = np.flatnonzero(valid)
@@ -130,7 +160,9 @@ async def _run_som(
             learning_rate=payload.learning_rate,
             random_state=settings.random_state,
         )
-        band_means, band_profiles = normalized_band_profiles(X, som.weights_denorm, dataset.bands)
+        band_means, band_profiles = normalized_band_profiles(
+            X, som.weights_denorm, len(feature_band_indices)
+        )
 
         probs = None
         pred_idx = None
@@ -240,7 +272,11 @@ async def _run_som(
             quantization_error=som.quantization_error,
             topographic_error=som.topographic_error,
             model_iteration=model_iteration,
-            bands=dataset.bands,
+            bands=len(feature_band_indices),
+            predictor_band_indices=feature_selection["indices"],
+            predictor_band_names=feature_selection["names"],
+            excluded_band_indices=feature_selection["excluded_indices"],
+            excluded_band_names=feature_selection["excluded_names"],
             classes=project.classes,
             u_matrix=[[float(v) for v in row] for row in som.u_matrix.tolist()],
             hit_grid=[[int(v) for v in row] for row in som.hit_grid.tolist()],
@@ -320,12 +356,21 @@ async def run_som_classification(
     stride = payload.stride or settings.resolved_stride()
     export_dir = project_dir(settings, "exports", project.id)
     som_path = export_dir / f"som_ds{dataset.id}_{uuid.uuid4().hex[:8]}.tif"
+    try:
+        feature_band_indices = classification_band_selection(dataset.band_schema, dataset.bands)["indices"]
+    except SchemaConflict as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     def _compute() -> UnsupervisedSomResult:
-        arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+        arr = load_raster(
+            dataset.path,
+            dataset.nodata,
+            settings.max_raster_elements,
+            band_indexes=feature_band_indices,
+        )
         crop = arr[:, region.y0 : region.y1, region.x0 : region.x1]
         if payload.resolution == "pixel":
-            flat = np.moveaxis(crop, 0, -1).reshape(-1, dataset.bands)
+            flat = np.moveaxis(crop, 0, -1).reshape(-1, len(feature_band_indices))
             # Same strictness as supervised pixel mode: one missing band makes
             # the pixel nodata instead of being imputed into a cluster.
             valid_mask = np.isfinite(flat).all(axis=1)
@@ -345,7 +390,7 @@ async def run_som_classification(
             flat,
             valid_mask,
             out_shape,
-            dataset.bands,
+            len(feature_band_indices),
             rows=payload.rows,
             cols=payload.cols,
             n_clusters=payload.n_clusters,
@@ -419,6 +464,10 @@ async def classify_som_endpoint(
     """
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, payload.dataset_id)
+    try:
+        feature_selection = classification_band_selection(dataset.band_schema, dataset.bands)
+    except SchemaConflict as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     export, region, result = await run_som_classification(
         session, settings, project, dataset, payload
     )
@@ -431,6 +480,10 @@ async def classify_som_endpoint(
         epochs=result.epochs,
         n_clusters=result.n_clusters,
         resolution=payload.resolution,
+        predictor_band_indices=feature_selection["indices"],
+        predictor_band_names=feature_selection["names"],
+        excluded_band_indices=feature_selection["excluded_indices"],
+        excluded_band_names=feature_selection["excluded_names"],
         region=region,
         shape=list(result.cluster_map.shape),
         total_valid=result.total_valid,

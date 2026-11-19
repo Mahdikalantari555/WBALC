@@ -108,6 +108,87 @@ def labelled(client, project) -> dict:
 
 
 # ------------------------------------------------------------------- metrics
+def test_research_refuses_multiple_datasets_without_provable_band_identity(settings):
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.services.research_service import ResearchError, score_protocol
+
+    datasets = {
+        1: SimpleNamespace(
+            id=1,
+            bands=2,
+            band_schema={"declared": True, "band_names": ["blue", "green"]},
+        ),
+        2: SimpleNamespace(id=2, bands=2, band_schema={"declared": False, "band_names": None}),
+    }
+    split = {
+        "status": "ok",
+        "train_records": [{"dataset_id": 1}],
+        "test_records": [{"dataset_id": 2}],
+    }
+    with pytest.raises(ResearchError, match="cannot be proven compatible"):
+        asyncio.run(
+            score_protocol(
+                project_id=1,
+                split=split,
+                datasets=datasets,
+                class_names=["water", "land"],
+                settings=settings,
+            )
+        )
+
+
+def test_research_pixel_feature_extraction_skips_declared_scl(tmp_path, settings):
+    from types import SimpleNamespace
+
+    from affine import Affine
+
+    from app.services.research_service import _features_for
+
+    path = tmp_path / "research-scl.tif"
+    values = np.stack(
+        [
+            np.full((4, 5), 10, dtype=np.float32),
+            np.full((4, 5), 20, dtype=np.float32),
+            np.full((4, 5), 30, dtype=np.float32),
+            np.full((4, 5), 9, dtype=np.float32),
+        ]
+    )
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=4,
+        width=5,
+        count=4,
+        dtype="float32",
+        crs="EPSG:32631",
+        transform=Affine(10, 0, 500000, 0, -10, 4649776),
+    ) as dst:
+        dst.write(values)
+    dataset = SimpleNamespace(
+        id=1,
+        path=str(path),
+        nodata=None,
+        width=5,
+        height=4,
+        bands=4,
+        band_schema={"declared": True, "band_names": ["blue", "green", "red", "SCL_20m"]},
+    )
+
+    features, targets, kept = _features_for(
+        [{"dataset_id": 1, "x": 2.5, "y": 1.5, "class_index": 2}],
+        {1: dataset},
+        settings,
+        resolution="pixel",
+        patch_size=8,
+        stride=8,
+    )
+    assert features.tolist() == [[10.0, 20.0, 30.0]]
+    assert targets == [2] and len(kept) == 1
+
+
 def test_per_class_metrics_report_nulls_with_reasons():
     y_true = [0, 0, 1, 1]
     y_pred = [0, 1, 1, 1]

@@ -261,10 +261,20 @@ def _base_tags(classes: list[str], grid: dict | None, resolution: str | None) ->
             "band_schema_verified",
             "band_schema_reason",
             "schema_override",
+            "predictor_band_indices",
+            "predictor_band_names",
+            "excluded_band_indices",
+            "excluded_band_names",
             "training_run_id",
         ):
             if key in grid and grid[key] is not None:
-                tags[key] = str(grid[key]).lower() if isinstance(grid[key], bool) else str(grid[key])
+                value = grid[key]
+                if isinstance(value, bool):
+                    tags[key] = str(value).lower()
+                elif isinstance(value, (dict, list)):
+                    tags[key] = json.dumps(value, sort_keys=True)
+                else:
+                    tags[key] = str(value)
     if resolution is not None:
         tags["resolution"] = resolution
     return tags

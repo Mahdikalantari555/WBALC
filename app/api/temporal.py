@@ -16,6 +16,7 @@ Design rules this router enforces:
 
 from __future__ import annotations
 
+import math
 import uuid
 from pathlib import Path
 
@@ -815,6 +816,11 @@ async def create_fusion(
         prob, valid, grid = _load_probability(analysis)
         aligned = not _same_grid(grid, target_grid)
         if aligned:
+            # Probability GeoTIFFs use PROBABILITY_NODATA (-9999), while the
+            # categorical reproject helper is given the hard-map sentinel. Map
+            # invalid source cells to that fill before warping, then exclude it
+            # explicitly: finite nodata sentinels are not valid probabilities.
+            prob = np.where(valid[None, :, :], prob, NODATA).astype(np.float32, copy=False)
             prob = _reproject(
                 prob,
                 source=grid,
@@ -823,12 +829,12 @@ async def create_fusion(
                 dtype=np.float32,
                 resampling=Resampling.nearest,
             )
-            valid = np.isfinite(prob).all(axis=0)
+            valid = np.isfinite(prob).all(axis=0) & ~(prob == NODATA).any(axis=0)
         sensor = scene.sensor
         weight = float(payload.weights.get(sensor, payload.weights.get(str(analysis.id), 1.0)))
-        if weight < 0:
+        if not math.isfinite(weight) or weight < 0:
             raise HTTPException(
-                status_code=422, detail=f"Weight for {sensor} must not be negative ({weight})"
+                status_code=422, detail=f"Weight for {sensor} must be finite and non-negative ({weight})"
             )
         sources.append(
             {
@@ -844,62 +850,78 @@ async def create_fusion(
         stacks.append(prob)
         validities.append(valid)
 
-    total_weight = sum(entry["weight"] for entry in sources)
-    if total_weight <= 0:
-        raise HTTPException(status_code=422, detail="At least one source weight must be positive")
-
     stacked = np.stack(stacks, axis=0)  # (sources, classes, rows, cols)
     stack_valid = np.stack(validities, axis=0)  # (sources, rows, cols)
     rows, cols = target_grid["height"], target_grid["width"]
     shape = (len(classes), rows, cols)
+    weighted_rule = payload.rule in ("weighted_probability", "weighted_vote")
+    participating_indices = (
+        [index for index, entry in enumerate(sources) if entry["weight"] > 0]
+        if weighted_rule
+        else list(range(len(sources)))
+    )
+    if weighted_rule and not participating_indices:
+        raise HTTPException(status_code=422, detail="At least one source weight must be positive")
+    weight_scale = (
+        max(sources[index]["weight"] for index in participating_indices)
+        if weighted_rule
+        else 1.0
+    )
+    normalized_weights = (
+        {index: sources[index]["weight"] / weight_scale for index in participating_indices}
+        if weighted_rule
+        else {}
+    )
 
-    if payload.missing_policy == "require_all":
-        joint = stack_valid.all(axis=0)
+    if payload.rule == "weighted_probability":
         fused = np.zeros(shape, dtype=np.float32)
         weight_sum = np.zeros((rows, cols), dtype=np.float32)
-        for index, entry in enumerate(sources):
-            fused += entry["weight"] * np.nan_to_num(stacked[index], nan=0.0)
-            weight_sum += entry["weight"] * stack_valid[index]
-        fused = np.divide(fused, weight_sum, out=np.zeros(shape, dtype=np.float32), where=weight_sum > 0)
-        fused[:, ~joint] = np.nan
-        missing_note = (
-            "a pixel is fused only where every source has a valid probability; "
-            "elsewhere the result is nodata"
+        for index in participating_indices:
+            weight = np.float32(normalized_weights[index])
+            valid_source = stack_valid[index]
+            contribution = np.where(valid_source[None, :, :], stacked[index], 0.0)
+            fused += weight * contribution
+            weight_sum += weight * valid_source
+        keep = (
+            stack_valid.all(axis=0)
+            if payload.missing_policy == "require_all"
+            else stack_valid[participating_indices].any(axis=0)
         )
-    else:
-        fused = np.zeros(shape, dtype=np.float32)
-        weight_sum = np.zeros((rows, cols), dtype=np.float32)
-        for index, entry in enumerate(sources):
-            contribution = np.nan_to_num(stacked[index], nan=0.0) * stack_valid[index]
-            fused += entry["weight"] * contribution
-            weight_sum += entry["weight"] * stack_valid[index]
-        keep = weight_sum > 0
-        fused = np.divide(fused, weight_sum, out=np.zeros(shape, dtype=np.float32), where=keep)
+        keep &= weight_sum > 0
+        fused = np.divide(fused, weight_sum, out=np.zeros(shape, dtype=np.float32), where=weight_sum > 0)
         fused[:, ~keep] = np.nan
         missing_note = (
-            "weights are renormalised over the sources valid at each pixel; a single "
-            "available source carries the full weight there"
+            "a pixel is fused only where every source is valid; elsewhere the result is nodata"
+            if payload.missing_policy == "require_all"
+            else "weights are renormalised over valid positive-weight sources at each pixel"
         )
-
-    if payload.rule == "weighted_vote":
-        # Each source casts one weighted vote for its own hard class.
+    elif payload.rule == "weighted_vote":
+        # Each positive-weight source casts one weighted vote for its own hard class.
         fused = np.zeros(shape, dtype=np.float32)
-        tally_valid = np.zeros((rows, cols), dtype=bool)
-        for index, entry in enumerate(sources):
-            hard_source = np.argmax(np.nan_to_num(stacked[index], nan=-1.0), axis=0)
+        for index in participating_indices:
+            weight = np.float32(normalized_weights[index])
+            hard_source = np.argmax(
+                np.where(stack_valid[index][None, :, :], stacked[index], -1.0), axis=0
+            )
             hard_source = np.where(stack_valid[index], hard_source, -1)
-            tally_valid |= stack_valid[index]
             for class_index in range(len(classes)):
-                fused[class_index] += entry["weight"] * (hard_source == class_index)
-        fused[:, ~tally_valid] = np.nan
-        missing_note = (
-            "each source casts one weighted vote for its hard class; a pixel is fused "
-            "where at least one source is valid, and ties break toward the lower class index"
+                fused[class_index] += weight * (hard_source == class_index)
+        keep = (
+            stack_valid.all(axis=0)
+            if payload.missing_policy == "require_all"
+            else stack_valid[participating_indices].any(axis=0)
         )
-
-    if payload.rule == "priority":
+        keep &= np.any(fused > 0, axis=0)
+        fused[:, ~keep] = np.nan
+        missing_note = (
+            "each positive-weight source casts one weighted vote; every source must be valid "
+            "and ties break toward the lower class index"
+            if payload.missing_policy == "require_all"
+            else "each valid positive-weight source casts one weighted vote; ties break toward the lower class index"
+        )
+    elif payload.rule == "priority":
         order = payload.priority or [entry["analysis_id"] for entry in sources]
-        if set(order) != {entry["analysis_id"] for entry in sources}:
+        if set(order) != {entry["analysis_id"] for entry in sources} or len(order) != len(sources):
             raise HTTPException(
                 status_code=422,
                 detail="priority must list every analysis_id exactly once",
@@ -909,38 +931,48 @@ async def create_fusion(
         for analysis_id in order:
             index = [entry["analysis_id"] for entry in sources].index(analysis_id)
             take = stack_valid[index] & ~decided
-            fused[:, take] = np.nan_to_num(stacked[index][:, take], nan=0.0)
+            fused[:, take] = stacked[index][:, take]
             decided |= take
-        missing_note = "the first source (in priority order) with a valid pixel decides it"
+        if payload.missing_policy == "require_all":
+            joint = stack_valid.all(axis=0)
+            fused[:, ~joint] = np.nan
+            missing_note = (
+                "every source must be valid; among them the first source in priority order decides, "
+                "otherwise the result is nodata"
+            )
+        else:
+            missing_note = "the first valid source in priority order decides each pixel"
 
+    fused = fused.astype(np.float32, copy=False)
     fused_hard = np.argmax(fused, axis=0).astype(np.int32)
     any_valid = np.isfinite(fused).any(axis=0)
     fused_hard[~any_valid] = NODATA
 
-    # Per-pixel agreement: how many sources share the winning class.
+    # Agreement counts only sources that participate in this rule: positive
+    # weights for weighted rules, every source for priority.
     votes = np.zeros((rows, cols), dtype=np.int32)
-    hard_per_source = []
-    for index, _entry in enumerate(sources):
-        hard_source = np.argmax(np.nan_to_num(stacked[index], nan=-1.0), axis=0)
-        hard_source = np.where(stack_valid[index], hard_source, -1)
-        hard_per_source.append(hard_source)
-    for hard_source in hard_per_source:
-        votes += (hard_source == fused_hard) & any_valid
+    hard_per_source: dict[int, np.ndarray] = {}
+    for index in participating_indices:
+        hard_source = np.argmax(
+            np.where(stack_valid[index][None, :, :], stacked[index], -1.0), axis=0
+        )
+        hard_per_source[index] = np.where(stack_valid[index], hard_source, -1)
+        votes += (hard_per_source[index] == fused_hard) & any_valid
+    agreement_count = len(participating_indices)
+    unanimous = (votes == agreement_count) & any_valid
     agreement = {
-        "sources": len(sources),
-        "unanimous_pixels": int(((votes == len(sources)) & any_valid).sum()),
+        "sources": agreement_count,
+        "unanimous_pixels": int(unanimous.sum()),
         "fused_valid_pixels": int(any_valid.sum()),
-        "unanimous_share": (
-            float(((votes == len(sources)) & any_valid).sum()) / float(any_valid.sum())
-            if any_valid.sum()
-            else 0.0
-        ),
+        "unanimous_share": float(unanimous.sum()) / float(any_valid.sum()) if any_valid.sum() else 0.0,
         "mean_agreeing_sources": float(votes[any_valid].mean()) if any_valid.sum() else 0.0,
         "per_source": [
             {
                 "analysis_id": entry["analysis_id"],
                 "sensor": entry["sensor"],
-                "agreeing_pixels": int(((hard_per_source[index] == fused_hard) & any_valid).sum()),
+                "participates": index in hard_per_source,
+                "agreeing_pixels": int(((hard_per_source[index] == fused_hard) & any_valid).sum())
+                if index in hard_per_source else 0,
             }
             for index, entry in enumerate(sources)
         ],

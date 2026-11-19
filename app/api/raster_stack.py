@@ -5,6 +5,7 @@ import json
 import math
 import re
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Annotated, Literal
@@ -12,10 +13,12 @@ from typing import Annotated, Literal
 import anyio
 import numpy as np
 import rasterio
+from affine import Affine
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
 
+from ..services.schema_service import is_scl_band
 from .datasets import upload_geotiff
 from .deps import SessionDep, SettingsDep, get_project
 from .scenes import register_scene
@@ -28,6 +31,18 @@ class UploadLimitExceeded(Exception):
     """The combined stack inputs exceed the configured upload budget."""
 
 
+@dataclass(frozen=True)
+class _TargetGrid:
+    width: int
+    height: int
+    crs: object
+    transform: Affine
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.height, self.width
+
+
 def _pixel_resolution(source) -> tuple[float, float]:
     transform = source.transform
     return math.hypot(float(transform.a), float(transform.d)), math.hypot(float(transform.b), float(transform.e))
@@ -37,11 +52,18 @@ def _axis_resolution(source) -> tuple[float, float]:
     transform = source.transform
     if not math.isclose(transform.b, 0.0, abs_tol=1e-12) or not math.isclose(transform.d, 0.0, abs_tol=1e-12):
         raise ValueError('Rotated or sheared band grids cannot be auto-aligned; prepare these bands on a common north-up grid.')
-    return abs(float(transform.a)), abs(float(transform.e))
+    if transform.a <= 0 or transform.e >= 0:
+        raise ValueError('Only north-up band grids can be auto-aligned during stacking.')
+    return float(transform.a), -float(transform.e)
 
 
 def _same_grid(source, reference) -> bool:
-    return (source.shape, source.crs, source.transform) == (reference.shape, reference.crs, reference.transform)
+    return (
+        source.width == reference.width
+        and source.height == reference.height
+        and source.crs == reference.crs
+        and source.transform == reference.transform
+    )
 
 
 def _target_grid(sources):
@@ -53,9 +75,9 @@ def _target_grid(sources):
         raise ValueError('Bands with different grids must share the same declared CRS; reprojection is not performed during band stacking.')
 
     resolutions = [_axis_resolution(source) for source in sources]
-    # The target must be at least as fine in both axes as every input. This
-    # handles native 10/20/60 m Sentinel bands without downsampling the finest
-    # input or inventing a grid for anisotropic/unrelated rasters.
+    # Use the finest native grid where every source resolution is an integer
+    # multiple. Different native extents are allowed; output is cropped to the
+    # common pixel-aligned overlap rather than inventing coverage.
     candidates = [
         index for index, (rx, ry) in enumerate(resolutions)
         if all(rx <= ox * (1 + 1e-9) and ry <= oy * (1 + 1e-9) for ox, oy in resolutions)
@@ -67,22 +89,47 @@ def _target_grid(sources):
     target_x, target_y = resolutions[target_index]
     if target_x <= 0 or target_y <= 0:
         raise ValueError('Band resolution must be positive.')
-    target_bounds = tuple(float(value) for value in target.bounds)
-    tolerance = max(1e-6, min(target_x, target_y) * 1e-6)
 
     for source, (source_x, source_y) in zip(sources, resolutions):
-        bounds = tuple(float(value) for value in source.bounds)
-        if not np.allclose(bounds, target_bounds, rtol=0, atol=tolerance):
-            raise ValueError('All bands must cover an identical footprint; cropped or shifted bands cannot be auto-aligned.')
-        for source_size, target_size in ((source_x, target_x), (source_y, target_y)):
-            ratio = source_size / target_size
-            if ratio < 1 - 1e-9 or not math.isclose(ratio, round(ratio), rel_tol=0, abs_tol=1e-8):
-                raise ValueError('Band resolutions must be integer multiples on the same aligned grid (for example, 10 m and 20 m).')
-        col_offset = (float(source.transform.c) - float(target.transform.c)) / target_x
-        row_offset = (float(target.transform.f) - float(source.transform.f)) / target_y
+        ratios = (source_x / target_x, source_y / target_y)
+        if any(
+            ratio < 1 - 1e-9
+            or not math.isclose(ratio, round(ratio), rel_tol=0, abs_tol=1e-8)
+            for ratio in ratios
+        ):
+            raise ValueError('Band resolutions must be integer multiples on the same aligned grid (for example, 10 m and 20 m).')
+        # A coarser grid must align on its own pixel lattice, not merely land on
+        # any fine-grid pixel. Otherwise its centres are half a source pixel off.
+        col_offset = (float(source.transform.c) - float(target.transform.c)) / source_x
+        row_offset = (float(target.transform.f) - float(source.transform.f)) / source_y
         if not math.isclose(col_offset, round(col_offset), rel_tol=0, abs_tol=1e-8) or not math.isclose(row_offset, round(row_offset), rel_tol=0, abs_tol=1e-8):
-            raise ValueError('Band grids are shifted relative to one another; sub-pixel alignment is not inferred.')
-    return target, True
+            raise ValueError('Band grids are shifted by a fractional source pixel; sub-pixel alignment is not inferred.')
+
+    bounds = [tuple(float(value) for value in source.bounds) for source in sources]
+    left = max(entry[0] for entry in bounds)
+    bottom = max(entry[1] for entry in bounds)
+    right = min(entry[2] for entry in bounds)
+    top = min(entry[3] for entry in bounds)
+    if left >= right or bottom >= top:
+        raise ValueError('Band footprints do not overlap in the shared CRS.')
+
+    # Keep only target pixels fully contained in the common footprint. The
+    # small pixel-space tolerance absorbs floating-point representation noise,
+    # not real half-pixel shifts.
+    epsilon = 1e-8
+    col_start = max(0, math.ceil((left - float(target.transform.c)) / target_x - epsilon))
+    col_stop = min(target.width, math.floor((right - float(target.transform.c)) / target_x + epsilon))
+    row_start = max(0, math.ceil((float(target.transform.f) - top) / target_y - epsilon))
+    row_stop = min(target.height, math.floor((float(target.transform.f) - bottom) / target_y + epsilon))
+    if col_stop <= col_start or row_stop <= row_start:
+        raise ValueError('Band footprints have no full target pixels in common after alignment.')
+
+    return _TargetGrid(
+        width=col_stop - col_start,
+        height=row_stop - row_start,
+        crs=target.crs,
+        transform=target.transform * Affine.translation(col_start, row_start),
+    ), True
 
 
 _CONTINUOUS_BANDS = {
@@ -103,7 +150,7 @@ def _resampling_for(name: str, requested: str) -> Resampling:
     normalized = name.strip().casefold()
     # Preserve class labels and QA bits even if a caller asks to smooth all
     # continuous bands explicitly.
-    if normalized in _CATEGORICAL_BANDS:
+    if normalized in _CATEGORICAL_BANDS or is_scl_band(normalized):
         return Resampling.nearest
     if requested != 'auto':
         return _RESAMPLING[requested]
@@ -124,12 +171,13 @@ def _band_data(source, window, scale: float, offset: float) -> np.ndarray:
 
 
 def stack(paths, names, target_path, limit, resampling='auto'):
-    """Write named bands on the finest co-registered source grid.
+    """Write named bands on the finest co-registered common-overlap grid.
 
     Different native resolutions are accepted only when they share a CRS and
-    footprint and are integer-aligned. Continuous Sentinel bands use bilinear
-    interpolation; SCL/QA masks use nearest-neighbour. Source scale/offset are
-    applied to samples so the output uses physical values and identity scale.
+    have a pixel-aligned overlapping footprint with integer-nested resolutions.
+    Continuous Sentinel bands use bilinear interpolation; SCL/QA masks use
+    nearest-neighbour. Source scale/offset are applied to samples so the output
+    uses physical values and identity scale.
     """
     if not paths or len(paths) != len(names):
         raise ValueError('Supply at least one source raster and one name per band.')

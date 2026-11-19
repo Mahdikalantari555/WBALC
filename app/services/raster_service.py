@@ -264,12 +264,30 @@ def check_element_budget(
     raise RasterError(detail)
 
 
-def load_raster(path: str | Path, nodata: float | None, max_elements: int) -> np.ndarray:
-    """Load raster as float32 (bands, H, W); masked/non-finite pixels become NaN."""
+def load_raster(
+    path: str | Path,
+    nodata: float | None,
+    max_elements: int,
+    *,
+    band_indexes: list[int] | None = None,
+) -> np.ndarray:
+    """Load selected zero-based bands as float32; masks/non-finite cells become NaN.
+
+    ``band_indexes`` lets model paths avoid materialising QA-only channels such
+    as SCL. The full source remains untouched and callers still use its metadata
+    for grid and schema validation.
+    """
     with rasterio.open(path) as ds:
-        check_element_budget(ds.count, ds.height, ds.width, max_elements, what="loading")
+        indexes = list(range(ds.count)) if band_indexes is None else list(band_indexes)
+        if (
+            not indexes
+            or any(not isinstance(index, (int, np.integer)) or index < 0 or index >= ds.count for index in indexes)
+            or len(set(indexes)) != len(indexes)
+        ):
+            raise RasterError("Requested raster band indexes are empty, duplicated, or outside the source band range")
+        check_element_budget(len(indexes), ds.height, ds.width, max_elements, what="loading")
         # read_masks honors per-band GDAL masks as well as nodata metadata.
-        masked = ds.read(masked=True, out_dtype="float32")
+        masked = ds.read(indexes=[index + 1 for index in indexes], masked=True, out_dtype="float32")
         arr = masked.filled(np.nan)
     arr[~np.isfinite(arr)] = np.nan
     if nodata is not None:

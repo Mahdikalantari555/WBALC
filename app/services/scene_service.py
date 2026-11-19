@@ -181,19 +181,25 @@ def require_compatible_model(
     }
 
 
-def _read_scene(scene: Scene, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
+def _read_scene(
+    scene: Scene, settings: Settings, band_indexes: list[int]
+) -> tuple[np.ndarray, np.ndarray]:
     path = Path(scene.storage_path)
     if not path.exists():
         raise SceneClassificationError(f"Scene {scene.id} file is missing from storage")
     check_element_budget(
-        scene.band_count,
+        len(band_indexes),
         scene.height,
         scene.width,
         settings.max_raster_elements,
         what="scene classification",
     )
     with rasterio.open(path) as src:
-        data = src.read(masked=True, out_dtype="float32")
+        data = src.read(
+            indexes=[index + 1 for index in band_indexes],
+            masked=True,
+            out_dtype="float32",
+        )
     filled = data.filled(np.nan)
     valid = np.isfinite(filled).all(axis=0)
     if getattr(data, "mask", None) is not None:
@@ -232,11 +238,20 @@ async def classify_scene(
     contract = require_compatible_model(
         run, checkpoint, scene, accept_unverified=accept_unverified_schema
     )
+    predictor_band_indices = checkpoint.get(
+        "predictor_band_indices", list(range(scene.band_count))
+    )
+    contract.update(
+        predictor_band_indices=predictor_band_indices,
+        predictor_band_names=checkpoint.get("predictor_band_names") or [],
+        excluded_band_indices=checkpoint.get("excluded_band_indices") or [],
+        excluded_band_names=checkpoint.get("excluded_band_names") or [],
+    )
 
     def _compute():
         model = checkpoint["model"]
         resolution = checkpoint.get("resolution", "pixel")
-        data, valid = _read_scene(scene, settings)
+        data, valid = _read_scene(scene, settings, predictor_band_indices)
         if resolution == "pixel":
             grid = make_grid(scene.height, scene.width, 1, 1)
             X, pixel_valid = pixel_features(data)
@@ -337,6 +352,10 @@ async def classify_scene(
         study_area_note=study["note"],
         band_schema_verified=contract["verified"],
         band_schema_reason=contract["reason"],
+        predictor_band_indices=contract["predictor_band_indices"],
+        predictor_band_names=contract["predictor_band_names"],
+        excluded_band_indices=contract["excluded_band_indices"],
+        excluded_band_names=contract["excluded_band_names"],
         scene_id=scene.id,
     )
 

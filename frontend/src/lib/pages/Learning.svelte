@@ -205,7 +205,7 @@
         strategy,
         method,
         batchSize,
-        datasetId: workspace.dataset?.id ?? '',
+        ...(workspace.dataset ? { datasetId: workspace.dataset.id } : {}),
         ...(strategy === 'random' && seed != null ? { seed } : {}),
       });
       workspace.setBatch(response);

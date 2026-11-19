@@ -701,6 +701,10 @@ class PredictResponse(BaseModel):
     band_schema_verified: bool = False
     band_schema_reason: str | None = None
     schema_override: bool = False
+    predictor_band_indices: list[int] = Field(default_factory=list)
+    predictor_band_names: list[str] = Field(default_factory=list)
+    excluded_band_indices: list[int] = Field(default_factory=list)
+    excluded_band_names: list[str] = Field(default_factory=list)
     study_area_applied: bool = False
     study_area_note: str | None = None
     # What a derived binary product would (or did) mean, and whether it is
@@ -755,6 +759,10 @@ class MapFieldOut(BaseModel):
     stale: bool = False
     band_schema_verified: bool = False
     band_schema_reason: str | None = None
+    predictor_band_indices: list[int] = Field(default_factory=list)
+    predictor_band_names: list[str] = Field(default_factory=list)
+    excluded_band_indices: list[int] = Field(default_factory=list)
+    excluded_band_names: list[str] = Field(default_factory=list)
     study_area_applied: bool = False
     study_area_note: str | None = None
     # Derived product plan; None when the project has no water taxonomy.
@@ -837,6 +845,10 @@ class SomResponse(BaseModel):
     # annotate patch cells (band-count or resolution mismatch).
     model_note: str | None = None
     bands: int
+    predictor_band_indices: list[int] = Field(default_factory=list)
+    predictor_band_names: list[str] = Field(default_factory=list)
+    excluded_band_indices: list[int] = Field(default_factory=list)
+    excluded_band_names: list[str] = Field(default_factory=list)
     classes: list[str]
     u_matrix: list[list[float]]
     hit_grid: list[list[int]]
@@ -879,6 +891,10 @@ class SomClassifyResponse(BaseModel):
     epochs: int
     n_clusters: int
     resolution: str
+    predictor_band_indices: list[int] = Field(default_factory=list)
+    predictor_band_names: list[str] = Field(default_factory=list)
+    excluded_band_indices: list[int] = Field(default_factory=list)
+    excluded_band_names: list[str] = Field(default_factory=list)
     region: Region
     shape: list[int]
     total_valid: int

@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import { mappingKey, readDraft, writeDraft } from '$lib/drafts';
   import { api } from '$lib/client/api';
-  import { planFolder, planManual, inferBand, validNames, type Job } from '$lib/intake';
+  import { bandSchemaKey, planFolder, planManual, inferBand, validNames, type Job } from '$lib/intake';
   import { getWorkspace } from '$lib/state.svelte';
   import { useT } from '$lib/t.svelte';
   let { projectId }: { projectId: string } = $props();
@@ -19,17 +19,24 @@
   let processing = $state('');
   let error = $state('');
   let modal: HTMLDialogElement;
-  let pending = $derived(jobs.filter(job => !states[job.key]?.id && !job.error && validNames(job.names) && (target === 'dataset' || job.date)));
   let needsOnly = $state(false);
-  let reviewed = $state<Record<string, boolean>>({});
+  let reviewedSchemas = $state<Record<string, boolean>>({});
   let drafts = $state<Record<string, string[] | null>>({});
   const draftKey = (job: Job) => mappingKey(projectId, mode, job.files);
+  const schemaReviewKey = (job: Job) => bandSchemaKey(job.sensor, job.names);
+  const isReviewed = (job: Job) => Boolean(reviewedSchemas[schemaReviewKey(job)]);
+  const pending = $derived(jobs.filter(job =>
+    !states[job.key]?.id && !job.error && validNames(job.names) &&
+    (target === 'dataset' || job.date) && isReviewed(job)
+  ));
+  function setReviewed(job: Job, value: boolean) {
+    reviewedSchemas[schemaReviewKey(job)] = value;
+  }
   function save(job: Job) {
-    reviewed[job.key] = false;
     drafts[job.key] = null;
     writeDraft(draftKey(job), [...job.names]);
   }
-  function needsReview(job: Job) { return !states[job.key]?.id && (!reviewed[job.key] || !!job.error || !!states[job.key]?.error || !validNames(job.names) || (target === 'scene' && !job.date)); }
+  function needsReview(job: Job) { return !states[job.key]?.id && (!isReviewed(job) || !!job.error || !!states[job.key]?.error || !validNames(job.names) || (target === 'scene' && !job.date)); }
   const problems = {
     dateInvalid: 'batch.dateInvalid', dateConflict: 'batch.dateConflict', metadataInvalid: 'batch.metadataInvalid',
     metadataTooLarge: 'batch.metadataTooLarge', metadataConflict: 'batch.metadataConflict', mixedSensor: 'batch.mixedSensor',
@@ -39,7 +46,7 @@
     const selected = [...(input.files ?? [])];
     input.value = '';
     if (!selected.length || busy || staging) return;
-    error = ''; states = {}; reviewed = {}; drafts = {}; needsOnly = false; jobs = []; staging = true; mode = kind;
+    error = ''; states = {}; reviewedSchemas = {}; drafts = {}; needsOnly = false; jobs = []; staging = true; mode = kind;
     try {
       if (kind === 'folder') {
         target = 'scene';
@@ -97,7 +104,12 @@
       }
       if (last && workspace.project?.id === projectId) {
         await workspace.reload();
-        if (destination === 'dataset' && workspace.project?.id === projectId) workspace.selectDataset(String(last));
+        if (workspace.project?.id === projectId) {
+          const queryDataset = destination === 'dataset'
+            ? String(last)
+            : workspace.datasets.at(-1)?.id;
+          if (queryDataset) workspace.selectDataset(queryDataset);
+        }
       }
     } finally { busy = false; processing = ''; }
   }
@@ -117,7 +129,7 @@
 <dialog bind:this={modal} aria-labelledby="batch-review" oncancel={(e) => { if (busy) e.preventDefault(); }}>
   <header><h2 id="batch-review">{t('batch.review')}</h2><p>{t('batch.reviewHint')}</p></header>
   <label class="field">{t('intake.kind')}
-    <select class="select" bind:value={target} onchange={() => { reviewed = {}; }} disabled={busy || Object.values(states).some(state => state.id)}>
+    <select class="select" bind:value={target} onchange={() => { reviewedSchemas = {}; }} disabled={busy || Object.values(states).some(state => state.id)}>
       <option value="scene">{t('intake.scene')}</option><option value="dataset">{t('intake.dataset')}</option>
     </select>
   </label>
@@ -125,10 +137,10 @@
   <div class="jobs">
     {#each jobs.filter(job => !needsOnly || needsReview(job)) as job (job.key)}
       <details open={mode === 'manual' || jobs.length === 1}>
-        <summary><bdi>{job.date.slice(0, 10) || (mode === 'manual' ? t('batch.single') : job.key || t('batch.unknown'))}</bdi> · {job.sensor} · {job.files.length} GeoTIFF {states[job.key]?.id ? `· ${t('batch.done')}` : reviewed[job.key] ? `· ${t('ux.reviewed')}` : `· ${t('ux.unreviewed')}`}</summary>
+        <summary><bdi>{job.date.slice(0, 10) || (mode === 'manual' ? t('batch.single') : job.key || t('batch.unknown'))}</bdi> · {job.sensor} · {job.files.length} GeoTIFF {states[job.key]?.id ? `· ${t('batch.done')}` : isReviewed(job) ? `· ${t('ux.reviewed')}` : `· ${t('ux.unreviewed')}`}</summary>
         <fieldset disabled={busy || Boolean(states[job.key]?.id)}>
           <label class="field">{t('intake.sensor')}
-            <select class="select" bind:value={job.sensor} onchange={() => { reviewed[job.key] = false; }}><option value="Sentinel-2">Sentinel-2</option><option value="Sentinel-1">Sentinel-1</option></select>
+            <select class="select" bind:value={job.sensor}><option value="Sentinel-2">Sentinel-2</option><option value="Sentinel-1">Sentinel-1</option></select>
           </label>
           {#if target === 'scene'}
             <label class="field">{t('intake.date')}<input class="input" type="date" value={job.date.slice(0, 10)} onchange={(event) => {
@@ -136,11 +148,10 @@
               const time = job.date.length > 10 ? job.date.slice(10) : 'T00:00:00Z';
               job.date = day ? `${day}${time}` : '';
               if (job.error === 'dateInvalid' || job.error === 'dateConflict') delete job.error;
-              reviewed[job.key] = false;
             }} /></label>
           {/if}
           {#if target === 'scene'}
-            <label class="field">{t('intake.platform')}<input class="input" maxlength="100" bind:value={job.platform} oninput={() => { reviewed[job.key] = false; }} /></label>
+            <label class="field">{t('intake.platform')}<input class="input" maxlength="100" bind:value={job.platform} /></label>
           {/if}
           {#if job.metadata?.metadataFileCount}
             <p class="metadata-read">{t('batch.metadataRead', { count: job.metadata.metadataFileCount })}</p>
@@ -150,7 +161,7 @@
           {#each job.files as file, index}
             <label class="band-row"><span><bdi>{file.name}</bdi>{#if inferBand(file.name)}<small class="suggestion">{t('ux.suggested', { name: inferBand(file.name) })}</small>{/if}</span><input class="input" aria-label={t('batch.bandName', { index: index + 1 })} dir="ltr" bind:value={job.names[index]} oninput={() => { void tick().then(() => save(job)); }} /></label>
           {/each}
-          <label class="review-check"><input type="checkbox" bind:checked={reviewed[job.key]} disabled={!validNames(job.names) || Boolean(job.error) || (target === 'scene' && !job.date)} /> {t('ux.confirmMapping')}</label>
+          <label class="review-check"><input type="checkbox" checked={isReviewed(job)} onchange={(event) => setReviewed(job, event.currentTarget.checked)} disabled={!validNames(job.names) || Boolean(job.error) || (target === 'scene' && !job.date)} /> {t('ux.confirmMapping')}</label>
         </fieldset>
         {#if states[job.key]?.id}<button class="button small" disabled={busy} onclick={() => { modal.close(); workspace.openRaster(projectId, target, String(states[job.key].id)); }}>{t('ux.openMap')}</button>{/if}
       </details>

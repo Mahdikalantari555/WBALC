@@ -179,6 +179,32 @@ class TestSceneFoundation:
         again = [scene["source_filename"] for scene in client.get(f"/projects/{project['id']}/scenes").json()]
         assert set(names) == {"dup-a.tif", "dup-b.tif"} and names == again
 
+    def test_first_scene_supplies_a_cold_start_query_dataset(self, client, project):
+        created = upload(
+            client,
+            project["id"],
+            geotiff(),
+            sensor="Sentinel-2",
+            acquisition_datetime="2025-01-02T00:00:00Z",
+            filename="first-scene.tif",
+        )
+        assert created.status_code == 201, created.text
+        datasets = client.get(f"/projects/{project['id']}/dataset").json()
+        assert len(datasets) == 1 and datasets[0]["filename"] == "first-scene.tif"
+        assert datasets[0]["band_schema"]["declared"] is True
+
+        batch = client.post(
+            f"/projects/{project['id']}/query",
+            json={
+                "strategy": "diversity",
+                "dataset_id": datasets[0]["id"],
+                "batch_size": 1,
+            },
+        )
+        assert batch.status_code == 200, batch.text
+        assert batch.json()["training_run_id"] is None
+        assert batch.json()["batch_size"] == 1
+
     def test_invalid_uploads_do_not_register_or_leave_source(self, client, project):
         bad_suffix = upload(client, project["id"], b"bad", sensor="Sentinel-2", filename="bad.txt")
         assert bad_suffix.status_code == 422
@@ -215,8 +241,14 @@ class TestSceneFoundation:
         assert hashlib.sha256(stored_path.read_bytes()).digest() == hashlib.sha256(content).digest()
         with rasterio.open(io.BytesIO(content)) as original, rasterio.open(stored_path) as persisted:
             assert np.array_equal(original.read_masks(), persisted.read_masks())
+        datasets = client.get(f"/projects/{project['id']}/dataset").json()
+        alias = next(item for item in datasets if item["filename"] == "original.tif")
         removed = client.delete(f"/projects/{project['id']}/scenes/{created['id']}")
-        assert removed.status_code == 204 and not stored_path.exists()
+        assert removed.status_code == 204 and stored_path.exists()
+        assert client.get(f"/projects/{project['id']}/dataset/{alias['id']}/file").status_code == 200
+        # The scene-backed dataset remains usable until its own last reference is deleted.
+        assert client.delete(f"/projects/{project['id']}/dataset/{alias['id']}").status_code == 204
+        assert not stored_path.exists()
         remaining = client.get(f"/projects/{project['id']}/scenes").json()
         assert [scene["id"] for scene in remaining] == [another["id"]]
         assert client.get(f"/projects/{project['id']}").status_code == 200
