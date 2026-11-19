@@ -54,20 +54,20 @@
     return Array.from({ length: count }, (_, index) => min + (span * index) / (count - 1));
   });
 
-  const colors: Record<string, string> = { 'Sentinel-1': '#e9bf73', 'Sentinel-2': '#66bfff' };
+  const colors: Record<string, string> = { 'Sentinel-1': 'var(--warn)', 'Sentinel-2': 'var(--info)' };
 </script>
 
 <div class="chart-root" bind:clientWidth={measured}>
   {#if sorted.length}
     <svg height={height} {width} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={t('overview.series')}>
       {#each ticks as value}
-        <line x1={x(value)} x2={x(value)} y1={pad.top} y2={height - pad.bottom} stroke="#2b3b50" stroke-dasharray="3 4" />
+        <line x1={x(value)} x2={x(value)} y1={pad.top} y2={height - pad.bottom} stroke="var(--track)" stroke-dasharray="3 4" />
         <text class="axis" x={x(value)} y={height - 12} text-anchor="middle">{date(new Date(value))}</text>
       {/each}
       {#each rows as row, rowIndex}
         {@const y = pad.top + 26 + rowIndex * 54}
         <text class="axis row-label" x={pad.left} y={y - 13}>{row.sensor}</text>
-        <line x1={pad.left} x2={width - pad.right} y1={y} y2={y} stroke="#39495d" />
+        <line x1={pad.left} x2={width - pad.right} y1={y} y2={y} stroke="var(--track)" />
         {#each row.items as point (point.id)}
           {#if onselect}
             <circle
@@ -75,8 +75,8 @@
               cx={x(point.date)}
               cy={y}
               r={selected === point.id ? 7 : 4.5}
-              fill={colors[point.sensor] ?? '#8fd6d0'}
-              stroke={selected === point.id ? '#ffffff' : '#0b1522'}
+              fill={colors[point.sensor] ?? 'var(--accent)'}
+              stroke={selected === point.id ? 'var(--on-dark)' : 'var(--plot-bg)'}
               stroke-width={selected === point.id ? 2 : 1.5}
               role="button"
               tabindex="0"
@@ -94,8 +94,8 @@
               cx={x(point.date)}
               cy={y}
               r={4.5}
-              fill={colors[point.sensor] ?? '#8fd6d0'}
-              stroke="#0b1522"
+              fill={colors[point.sensor] ?? 'var(--accent)'}
+              stroke="var(--plot-bg)"
               stroke-width={1.5}
             />
           {/if}
@@ -123,9 +123,9 @@
 <style>
   .chart-root { min-width: 0; }
   .chart-root svg { display: block; max-width: 100%; overflow: visible; }
-  .axis { font: 9.5px var(--mono); fill: #93a7bd; }
-  .row-label { fill: #b6c5d6; }
-  .axis.empty { fill: #5f7387; }
+  .axis { font: 10px var(--mono); fill: var(--faint); }
+  .row-label { fill: var(--muted); }
+  .axis.empty { fill: var(--faint); }
   .point { cursor: pointer; }
   .point:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .chart-caption { display: flex; gap: 6px 14px; flex-wrap: wrap; justify-content: space-between; align-items: center; color: var(--muted); font-size: 10.5px; padding-top: 7px; border-top: 1px solid var(--line); }

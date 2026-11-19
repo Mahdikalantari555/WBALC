@@ -196,7 +196,7 @@
   .checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
   .checklist li { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 11.5px; }
   .checklist li.done { color: var(--ink); }
-  .checklist em { margin-inline-start: auto; font: 9.5px var(--mono); font-style: normal; color: var(--faint); }
+  .checklist em { margin-inline-start: auto; font: 10px var(--mono); font-style: normal; color: var(--faint); }
   .checklist li.done em { color: var(--accent); }
   .performance-rows { display: grid; gap: 12px; }
   @media (max-width: 1040px) {

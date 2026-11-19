@@ -548,18 +548,18 @@
         <option value="spatial">{t('research.protocol.spatial')}</option>
         <option value="temporal">{t('research.protocol.temporal')}</option>
       </select>
-      <label class="inline-field">
+      <label class="inline-field" for="protocol-seed">
         {t('research.protocol.seed')}
-        <input class="text-input narrow" type="number" bind:value={protocolSeed} />
+        <input id="protocol-seed" class="text-input narrow" type="number" bind:value={protocolSeed} />
       </label>
       {#if protocolKind === 'spatial'}
-        <label class="inline-field">
+        <label class="inline-field" for="protocol-block">
           {t('research.protocol.blockSize')}
-          <input class="text-input narrow" type="number" bind:value={protocolBlock} />
+          <input id="protocol-block" class="text-input narrow" type="number" bind:value={protocolBlock} />
         </label>
-        <label class="inline-field">
+        <label class="inline-field" for="protocol-buffer">
           {t('research.protocol.buffer')}
-          <input class="text-input narrow" type="number" bind:value={protocolBuffer} />
+          <input id="protocol-buffer" class="text-input narrow" type="number" bind:value={protocolBuffer} />
         </label>
       {/if}
       <button class="button" onclick={declareProtocol} disabled={researchBusy}>
@@ -711,12 +711,12 @@
     <span class="section-label">{t('research.reference')}</span>
     <p class="note-block faint">{t('research.reference.hint')}</p>
     <div class="experiment-controls">
-      <label class="inline-field">
+      <label class="inline-field" for="reference-area">
         {t('research.reference.area')}
-        <input class="text-input narrow" type="number" bind:value={refArea} />
+        <input id="reference-area" class="text-input narrow" type="number" bind:value={refArea} />
       </label>
-      <input class="text-input" placeholder={t('research.reference.source')} bind:value={refSource} />
-      <input class="text-input" placeholder={t('research.reference.method')} bind:value={refMethod} />
+      <input class="text-input" placeholder={t('research.reference.source')} aria-label={t('research.reference.source')} bind:value={refSource} />
+      <input class="text-input" placeholder={t('research.reference.method')} aria-label={t('research.reference.method')} bind:value={refMethod} />
       <button
         class="button"
         onclick={addReference}
@@ -742,7 +742,7 @@
     <!-- plans -->
     <span class="section-label">{t('research.plan')}</span>
     <div class="experiment-controls">
-      <input class="text-input" placeholder={t('research.plan.name')} bind:value={planName} />
+      <input class="text-input" placeholder={t('research.plan.name')} aria-label={t('research.plan.name')} bind:value={planName} />
       <button class="button" onclick={createPlan} disabled={researchBusy || !planName.trim()}>
         {t('research.plan.create')}
       </button>
@@ -945,6 +945,7 @@
       <input
         class="text-input"
         placeholder={t('evaluation.experiment.namePlaceholder')}
+        aria-label={t('evaluation.experiment.namePlaceholder')}
         bind:value={newExperiment}
       />
       <button class="button" onclick={createExperiment} disabled={busy || !newExperiment.trim()}>
@@ -1183,20 +1184,20 @@
   .reference-list { list-style: none; margin: 6px 0 12px; padding: 0; display: grid; gap: 5px; }
   .reference-list li { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; font-size: 11px; border-bottom: 1px solid var(--line); padding-block: 4px; }
   .caveat-list { margin: 4px 0 0; padding-left: 16px; color: var(--faint); font-size: 10.5px; line-height: 1.7; }
-  .source-chip { display: inline-block; margin-inline-end: 5px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font-size: 9.5px; }
-  .source-chip.aligned { color: #e5a25a; border-color: #7a5528; }
+  .source-chip { display: inline-block; margin-inline-end: 5px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; }
+  .source-chip.aligned { color: var(--warn); border-color: var(--control-border); }
   .lineage-status { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
-  .lineage-status.complete { color: #7fd6b4; border-color: #2f6b57; }
-  .lineage-status.incomplete { color: #e5a25a; border-color: #7a5528; }
-  .lineage-status.legacy { color: #9fb2c4; }
-  .accent { color: #66dcbe; }
-  .warn-icon { color: #e5a25a; }
+  .lineage-status.complete { color: var(--success); border-color: var(--control-border); }
+  .lineage-status.incomplete { color: var(--warn); border-color: var(--control-border); }
+  .lineage-status.legacy { color: var(--faint); }
+  .accent { color: var(--accent); }
+  .warn-icon { color: var(--warn); }
   .small { font-size: 11px; }
   .experiment-panel { display: grid; gap: 10px; }
   .experiment-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .experiment-controls .text-input, .experiment-controls .select { max-width: 240px; }
-  .comparison-verdict { margin: 0; font-size: 12px; color: #e5a25a; }
-  .comparison-verdict.ok { color: #7fd6b4; }
+  .comparison-verdict { margin: 0; font-size: 12px; color: var(--warn); }
+  .comparison-verdict.ok { color: var(--success); }
   .table-scroll { overflow-x: auto; }
   .compare-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .compare-table th, .compare-table td { text-align: start; padding: 5px 8px; border-bottom: 1px solid var(--line); }
@@ -1213,8 +1214,8 @@
   .distribution { display: grid; gap: 9px; }
   .distribution-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: 11.5px; }
   .distribution-row .mono { color: var(--ink); font-size: 11px; }
-  .distribution-track { grid-column: 1 / -1; height: 4px; border-radius: 4px; background: #293c50; overflow: hidden; }
-  .distribution-track i { display: block; height: 100%; background: #52b9a8; border-radius: 4px; }
+  .distribution-track { grid-column: 1 / -1; height: 4px; border-radius: 4px; background: var(--track); overflow: hidden; }
+  .distribution-track i { display: block; height: 100%; background: var(--success); border-radius: 4px; }
   @media (max-width: 1130px) {
     .evaluation-grid { grid-template-columns: minmax(0, 1fr); }
     .filter-meta { margin: 0; }

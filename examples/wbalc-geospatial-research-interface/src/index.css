@@ -16,29 +16,89 @@
   font-display: swap;
 }
 
+/*
+ * Design tokens.
+ *
+ * Two layers on purpose:
+ *  - shadcn-style semantic names (`--background`, `--card`, `--ring`, …) so the
+ *    `ui/` primitives read like any shadcn component tree, and
+ *  - the domain names the map/raster code already used (`--surface`, `--line`,
+ *    `--muted`, `--accent`), aliased onto the semantic layer. Renaming 4k lines
+ *    of page CSS would be churn with no user-visible benefit, so the
+ *    compatibility aliases stay and are documented here rather than hidden.
+ *
+ * Colour space is oklch so lightness is perceptually uniform: the light theme is
+ * a real inversion of the dark one instead of a second hand-tuned palette.
+ */
 :root {
   color-scheme: dark;
+
+  /* shadcn semantic layer */
+  --background: oklch(0.19 0.031 253);
+  --foreground: oklch(0.96 0.008 240);
+  --card: oklch(0.235 0.032 252);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.26 0.033 252);
+  --primary: oklch(0.83 0.12 178);
+  --primary-foreground: oklch(0.26 0.05 192);
+  --secondary: oklch(0.3 0.032 252);
+  --secondary-foreground: var(--foreground);
+  --muted-surface: oklch(0.28 0.026 252);
+  --muted-foreground: oklch(0.76 0.022 250);
+  --faint-foreground: oklch(0.65 0.026 250);
+  --accent-surface: oklch(0.32 0.04 200);
+  --accent-foreground: oklch(0.9 0.09 180);
+  --destructive: oklch(0.66 0.16 28);
+  --destructive-foreground: oklch(0.97 0.02 40);
+  --warning: oklch(0.81 0.12 76);
+  --warning-foreground: oklch(0.28 0.06 70);
+  --success: oklch(0.79 0.1 160);
+  --success-foreground: oklch(0.26 0.04 165);
+  --border: oklch(0.36 0.031 252);
+  --input: oklch(0.4 0.033 252);
+  --ring: oklch(0.83 0.12 178);
+  --radius: 8px;
+
+  /*
+   * Component-level tokens. These are the dark-theme values the pages used to
+   * hard-code inline, promoted to named roles so a variant is a token change
+   * instead of a 128-site find-and-replace. Values are unchanged.
+   */
+  --control-bg: oklch(0.246 0.041 257.8);
+  --control-border: oklch(0.393 0.039 247.5);
+  --track: oklch(0.349 0.043 250.4);
+  --plot-bg: oklch(0.193 0.030 255.4);
+  --on-dark: oklch(1.000 0.000 89.9);
+  --info: oklch(0.775 0.126 242.1);
+  --danger: oklch(0.746 0.116 58.7);
+  --danger-fg: oklch(0.891 0.042 45.9);
+
+  /* domain aliases (pre-existing names) */
+  --bg: var(--background);
+  --sidebar: oklch(0.199 0.031 259);
+  --toolbar: oklch(0.198 0.030 257.5);
+  --surface: var(--card);
+  --surface-raised: var(--popover);
+  --line: oklch(0.298 0.040 256.2);
+  --ink: var(--foreground);
+  --muted: var(--muted-foreground);
+  --faint: var(--faint-foreground);
+  --accent: var(--primary);
+  --accent-dim: var(--accent-surface);
+  --warn: var(--warning);
+
   font-family: Inter, system-ui, sans-serif;
   --mono: 'IBM Plex Mono', monospace;
-  --bg: #0b1320;
-  --sidebar: #0d1624;
-  --toolbar: #0d1623;
-  --surface: #101b2b;
-  --surface-raised: #152236;
-  --border: #26354a;
-  --line: #202e41;
-  --ink: #edf2f8;
-  --muted: #a2afc2;
-  --faint: #8394ac;
-  --accent: #5be2cd;
-  --accent-dim: #19383f;
-  --warn: #f3be67;
   background: var(--bg);
   color: var(--ink);
   font-size: 14px;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
 
 * { box-sizing: border-box; }
@@ -322,7 +382,7 @@ html[dir='rtl'] .ltr-numeric { direction: ltr; unicode-bidi: isolate; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font: 9.5px var(--mono);
+  font: 10px var(--mono);
   letter-spacing: .045em;
   color: #93e8d8;
   border: 1px solid #2e5b58;
@@ -340,7 +400,7 @@ html[dir='rtl'] .ltr-numeric { direction: ltr; unicode-bidi: isolate; }
 .badge-muted {
   display: inline-flex;
   align-items: center;
-  font: 9.5px var(--mono);
+  font: 10px var(--mono);
   letter-spacing: .045em;
   color: var(--faint);
   border: 1px solid var(--border);
@@ -360,3 +420,125 @@ html[dir='rtl'] .ltr-numeric { direction: ltr; unicode-bidi: isolate; }
   font-size: 10.5px;
 }
 .chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--chip-color, var(--accent)); }
+
+/* ==========================================================================
+   Primitives used by lib/components/ui/*
+   Kept next to the existing rules so both share the same tokens. New views
+   should compose these instead of re-inventing the same three declarations.
+   ========================================================================== */
+
+/* button */
+.btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+  transition: background 150ms, border-color 150ms, color 150ms;
+}
+.btn svg { flex: none; }
+.btn:hover:not(:disabled) { border-color: var(--input); background: var(--popover); }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); font-weight: 650; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-foreground); border-color: var(--accent-foreground); color: var(--primary-foreground); }
+.btn-secondary { background: var(--secondary); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn-ghost:hover:not(:disabled) { background: var(--accent-surface); color: var(--ink); border-color: transparent; }
+.btn-destructive { background: var(--destructive); border-color: var(--destructive); color: var(--destructive-foreground); }
+.btn-link { background: none; border: 0; padding: 0; color: var(--accent); font-size: 12px; font-weight: 560; text-decoration: none; display: inline-flex; align-items: center; gap: 7px; }
+.btn-link:hover { text-decoration: underline; }
+.btn-sm { min-height: 29px; padding: 0 9px; font-size: 11px; }
+.btn-icon { min-height: 32px; width: 32px; padding: 0; }
+
+/* badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--secondary);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.badge-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.badge-success { color: var(--success); border-color: color-mix(in oklch, var(--success) 45%, transparent); background: color-mix(in oklch, var(--success) 12%, transparent); }
+.badge-warning { color: var(--warning); border-color: color-mix(in oklch, var(--warning) 45%, transparent); background: color-mix(in oklch, var(--warning) 12%, transparent); }
+.badge-danger { color: var(--destructive); border-color: color-mix(in oklch, var(--destructive) 45%, transparent); background: color-mix(in oklch, var(--destructive) 12%, transparent); }
+.badge-info { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, transparent); background: color-mix(in oklch, var(--accent) 10%, transparent); }
+.badge-muted { color: var(--faint); }
+
+/* alert */
+.alert {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 11px 13px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.alert-icon { flex: none; margin-top: 1px; }
+.alert strong { display: block; color: var(--ink); font-size: 12px; font-weight: 620; margin-bottom: 2px; }
+.alert-warning { border-color: color-mix(in oklch, var(--warning) 40%, transparent); background: color-mix(in oklch, var(--warning) 9%, var(--surface)); color: var(--ink); }
+.alert-warning .alert-icon { color: var(--warning); }
+.alert-destructive { border-color: color-mix(in oklch, var(--destructive) 50%, transparent); background: color-mix(in oklch, var(--destructive) 12%, var(--surface)); color: var(--ink); }
+.alert-destructive .alert-icon { color: var(--destructive); }
+.alert-success { border-color: color-mix(in oklch, var(--success) 40%, transparent); background: color-mix(in oklch, var(--success) 9%, var(--surface)); }
+.alert-success .alert-icon { color: var(--success); }
+
+/* card */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
+.card-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 14px 16px 0; }
+.card-header h2 { margin: 0; color: var(--ink); font-size: 14px; font-weight: 640; letter-spacing: -.012em; }
+.card-header p { margin: 3px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; max-width: 62ch; }
+.card-body { padding: 14px 16px 16px; display: grid; gap: 12px; }
+.card-body > :first-child { margin-top: 0; }
+
+/* field + input + select */
+.field { display: grid; gap: 5px; color: var(--muted); font-size: 11.5px; font-weight: 540; }
+.field label { color: var(--faint); font-size: 10.5px; font-weight: 560; letter-spacing: .03em; text-transform: uppercase; }
+.field-hint { color: var(--faint); font-size: 10.5px; font-weight: 400; line-height: 1.5; text-transform: none; letter-spacing: 0; }
+.field-inline { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); }
+.input {
+  min-height: 34px;
+  width: 100%;
+  padding: 0 10px;
+  color: var(--ink);
+  background: var(--background);
+  border: 1px solid var(--input);
+  border-radius: 5px;
+  font-size: 12px;
+  transition: border-color 140ms;
+}
+.input::placeholder { color: var(--faint); }
+.input:hover { border-color: color-mix(in oklch, var(--input) 70%, var(--ink)); }
+.input:focus-visible { border-color: var(--ring); }
+.input-narrow { width: 96px; }
+
+/* table */
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table-caption { caption-side: top; text-align: start; color: var(--faint); font-size: 10.5px; padding-bottom: 6px; }
+.table th, .table td { text-align: start; padding: 6px 9px; border-bottom: 1px solid var(--line); }
+.table th { color: var(--faint); font-weight: 500; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; }
+.table tbody tr:hover { background: color-mix(in oklch, var(--popover) 55%, transparent); }
+
+/* empty state */
+.empty-state { display: grid; justify-items: start; gap: 5px; padding: 16px; border: 1px dashed var(--border); border-radius: 7px; color: var(--muted); font-size: 12px; }
+.empty-state svg { color: var(--faint); }
+.empty-state strong { color: var(--ink); font-size: 12.5px; font-weight: 600; }
+.empty-state span { font-size: 11.5px; line-height: 1.55; max-width: 66ch; }

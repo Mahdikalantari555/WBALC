@@ -135,8 +135,8 @@
       <InteractiveMap {dataset} {hard} {uncertainty} {binaryField} labels={workspace.labels} onselect={select} />
 
       {#if workspace.fieldError}
-        <div class="inline-error" role="alert">
-          <X size={16} />
+        <div class="alert alert-destructive" role="alert">
+          <X size={15} class="alert-icon" />
           <div>
             <strong>{schemaConflict ? t('map.schema.unverified') : t('map.noModel')}</strong>
             <span>{workspace.fieldError}</span>
@@ -421,33 +421,33 @@
 <style>
   .map-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 292px; align-items: start; gap: 15px; }
   .map-sidebar { display: grid; gap: 14px; min-width: 0; }
-  .visible-count { color: #92a9bf; font-size: 10px; }
+  .visible-count { color: var(--faint); font-size: 10px; }
   .layer-row-group { margin-inline: 13px; }
   .layer-row-group + .layer-row-group { border-top: 1px solid var(--line); }
   .mask-note { margin: 9px 13px 11px; color: var(--faint); font-size: 10.5px; line-height: 1.5; }
   .layer-row { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 6px 0; }
-  .layer-icon { display: grid; place-items: center; width: 29px; height: 29px; flex: none; color: #8fd6d0; background: #14283a; border: 1px solid #24404f; border-radius: 5px; }
+  .layer-icon { display: grid; place-items: center; width: 29px; height: 29px; flex: none; color: var(--accent); background: var(--control-bg); border: 1px solid var(--control-border); border-radius: 5px; }
   .layer-description { display: grid; gap: 3px; min-width: 0; }
   .layer-description strong { font-size: 12px; font-weight: 570; line-height: 1.25; }
   .layer-description small { color: var(--faint); font-size: 10.5px; line-height: 1.25; }
-  .layer-switch { width: 30px; height: 17px; flex: none; margin-inline-start: auto; display: flex; align-items: center; padding: 2px; background: #263848; border: 1px solid #496174; border-radius: 15px; transition: background 160ms, border-color 160ms; }
-  .layer-switch span { width: 11px; height: 11px; border-radius: 50%; background: #a2b2be; transition: transform 160ms, background 160ms; }
-  .layer-switch[aria-checked='true'] { background: #3c9b91; border-color: #55b9a9; }
-  .layer-switch[aria-checked='true'] span { transform: translateX(13px); background: #eafff9; }
+  .layer-switch { width: 30px; height: 17px; flex: none; margin-inline-start: auto; display: flex; align-items: center; padding: 2px; background: var(--control-border); border: 1px solid var(--control-border); border-radius: 15px; transition: background 160ms, border-color 160ms; }
+  .layer-switch span { width: 11px; height: 11px; border-radius: 50%; background: var(--faint); transition: transform 160ms, background 160ms; }
+  .layer-switch[aria-checked='true'] { background: var(--control-border); border-color: var(--success); }
+  .layer-switch[aria-checked='true'] span { transform: translateX(13px); background: var(--ink); }
   .layer-opacity { margin: -1px 0 12px 39px; }
-  .layer-opacity label { display: flex; justify-content: space-between; font-size: 10.5px; color: #a3b4c9; margin-bottom: 4px; }
-  .layer-opacity .mono { color: #94e8db; }
+  .layer-opacity label { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--faint); margin-bottom: 4px; }
+  .layer-opacity .mono { color: var(--accent); }
   .layer-opacity input[type='range'] { display: block; appearance: none; cursor: pointer; width: 100%; height: 14px; margin: 0; background: transparent; }
   .layer-opacity input[type='range']:disabled { cursor: not-allowed; opacity: 0.4; }
-  .layer-opacity input[type='range']::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, #63dcca var(--fill), #33485b var(--fill)); }
-  .layer-opacity input[type='range']::-moz-range-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, #63dcca var(--fill), #33485b var(--fill)); }
-  .layer-opacity input[type='range']::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: #87e9d9; border: 1px solid #b6f1e6; }
-  .layer-opacity input[type='range']::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: #87e9d9; border: 1px solid #b6f1e6; }
+  .layer-opacity input[type='range']::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, var(--accent) var(--fill), var(--control-border) var(--fill)); }
+  .layer-opacity input[type='range']::-moz-range-track { height: 3px; border-radius: 3px; background: linear-gradient(to right, var(--accent) var(--fill), var(--control-border) var(--fill)); }
+  .layer-opacity input[type='range']::-webkit-slider-thumb { appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: var(--accent); border: 1px solid var(--accent-foreground); }
+  .layer-opacity input[type='range']::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 1px solid var(--accent-foreground); }
   .layer-opacity .select { width: 100%; min-height: 30px; font-size: 11px; }
   .is-off .layer-icon { opacity: 0.56; }
   .feature-name { display: flex; gap: 10px; align-items: center; margin: 0 0 9px; }
-  .feature-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 6px; background: #173b5a; border: 1px solid #28567b; color: #79caff; }
-  .feature-icon.sample { background: #453724; border-color: #69563a; color: var(--warn); }
+  .feature-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 6px; background: var(--control-bg); border: 1px solid var(--control-border); color: var(--info); }
+  .feature-icon.sample { background: var(--control-bg); border-color: var(--control-border); color: var(--warn); }
   .feature-name strong { display: block; font-size: 14px; font-weight: 640; }
   .feature-name small { display: block; font-size: 10.5px; color: var(--faint); margin-top: 1px; }
   .feature-body .kv-list > div { padding-block: 7px; }

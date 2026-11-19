@@ -81,7 +81,7 @@
 
   const classOverlay = $derived.by(() => {
     if (!hard || typeof document === 'undefined') return null;
-    const palette = hard.classes.map((name, index) => colors[name] ?? Object.values(colors)[index] ?? '#4aa9ff');
+    const palette = hard.classes.map((name, index) => colors[name] ?? Object.values(colors)[index] ?? 'var(--info)');
     return renderClassOverlay(hard.values, hard.valid, palette);
   });
 
@@ -261,7 +261,7 @@
                 [window.y0, window.x0],
                 [window.y1, window.x1],
               ],
-              { color: '#ffe3a0', weight: 2, fill: false, interactive: false },
+              { color: 'var(--warn)', weight: 2, fill: false, interactive: false },
             );
       if (rect) cellLayer.addLayer(rect);
     }
@@ -290,7 +290,7 @@
         corners.push([wgs[1], wgs[0]]);
       }
       void field;
-      return L.polygon(corners, { color: '#ffe3a0', weight: 2, fill: false, interactive: false });
+      return L.polygon(corners, { color: 'var(--warn)', weight: 2, fill: false, interactive: false });
     }
 
     /** Sample markers: real label anchors, clickable and keyboard reachable. */
@@ -305,7 +305,7 @@
         const [lon, lat] = item.center;
         const position: [number, number] =
           mode === 'map' ? [lat, lon] : [dataset.height - lat, lon];
-        const color = colors[item.className] ?? '#f3be67';
+        const color = colors[item.className] ?? 'var(--warn)';
         const marker = L.marker(position, {
           pane: labelPane,
           keyboard: true,
@@ -455,23 +455,23 @@
   .map-shell.expanded { position: fixed; inset: 14px; z-index: 400; margin: 0; }
   .map-dimmer { position: fixed; inset: 0; background: #040a12d9; z-index: 390; }
   .map-bar { display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-bottom: 1px solid var(--line); flex-wrap: wrap; min-height: 46px; }
-  .map-title { display: flex; align-items: center; gap: 7px; color: #9ab1c9; }
+  .map-title { display: flex; align-items: center; gap: 7px; color: var(--faint); }
   .map-title h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
   .map-bar-divider { width: 1px; height: 17px; background: var(--border); }
   .map-bar-actions { display: flex; align-items: center; gap: 7px; margin-inline-start: auto; }
   .map-canvas-wrap { position: relative; flex: 1; min-height: 0; }
-  .map-canvas { height: clamp(340px, 52vh, 620px); background: #0a1320; }
+  .map-canvas { height: clamp(340px, 52vh, 620px); background: var(--plot-bg); }
   .map-shell.expanded .map-canvas { height: calc(100vh - 120px); }
   .map-controls { position: absolute; inset-block-start: 11px; inset-inline-start: 11px; display: grid; gap: 4px; z-index: 5; }
-  .map-controls .icon-button { background: #0e1a29e6; border: 1px solid #3d5568; width: 29px; height: 29px; }
-  .map-notice { position: absolute; inset-block-start: 11px; inset-inline-end: 11px; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: 5px; background: #0e1a29ec; border: 1px solid #3d5568; font-size: 11px; color: var(--muted); z-index: 6; max-width: 60%; }
-  .map-notice.error { border-color: #7a4a3a; color: #f4d3c4; flex-direction: column; align-items: flex-start; }
-  .map-readout { position: absolute; inset-block-end: 11px; inset-inline-end: 11px; padding: 3px 7px; border-radius: 4px; background: #0b1522df; border: 1px solid #35485a; color: #cfe0ee; font-size: 10.5px; z-index: 5; }
-  .map-legend { position: absolute; inset-block-end: 11px; inset-inline-start: 11px; display: grid; gap: 5px; padding: 8px 10px; border-radius: 6px; background: #0b1522e6; border: 1px solid #35485a; max-width: min(340px, 62%); z-index: 5; }
+  .map-controls .icon-button { background: #0e1a29e6; border: 1px solid var(--control-border); width: 29px; height: 29px; }
+  .map-notice { position: absolute; inset-block-start: 11px; inset-inline-end: 11px; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: 5px; background: #0e1a29ec; border: 1px solid var(--control-border); font-size: 11px; color: var(--muted); z-index: 6; max-width: 60%; }
+  .map-notice.error { border-color: var(--control-border); color: var(--danger-fg); flex-direction: column; align-items: flex-start; }
+  .map-readout { position: absolute; inset-block-end: 11px; inset-inline-end: 11px; padding: 3px 7px; border-radius: 4px; background: #0b1522df; border: 1px solid var(--control-border); color: var(--ink); font-size: 10.5px; z-index: 5; }
+  .map-legend { position: absolute; inset-block-end: 11px; inset-inline-start: 11px; display: grid; gap: 5px; padding: 8px 10px; border-radius: 6px; background: #0b1522e6; border: 1px solid var(--control-border); max-width: min(340px, 62%); z-index: 5; }
   .legend-ramp { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--faint); }
-  .ramp-bar { display: block; width: 110px; height: 6px; border-radius: 4px; background: linear-gradient(to right, #2c4a63, #3f7f86, #68b9a6, #c6c07a, #e39a5f); }
+  .ramp-bar { display: block; width: 110px; height: 6px; border-radius: 4px; background: linear-gradient(to right, var(--secondary), var(--control-border), var(--success), var(--ink), var(--danger)); }
   .legend-note { margin: 0; font-size: 10px; color: var(--warn); }
-  .spinner { width: 11px; height: 11px; border-radius: 50%; border: 2px solid #3d5568; border-top-color: var(--accent); animation: spin 700ms linear infinite; }
+  .spinner { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--control-border); border-top-color: var(--accent); animation: spin 700ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (max-width: 700px) {
     .map-bar { gap: 6px; }
@@ -485,8 +485,8 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    background: var(--pin, #f3be67);
-    border: 2px solid #04202b;
+    background: var(--pin, var(--warn));
+    border: 2px solid var(--plot-bg);
     box-shadow: 0 0 0 2px #ffffff26;
   }
   :global(.wbalc-sample-pin:focus-visible span) { outline: 2px solid var(--accent); outline-offset: 2px; }

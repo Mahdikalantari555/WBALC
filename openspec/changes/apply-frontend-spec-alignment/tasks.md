@@ -40,13 +40,27 @@ ticked only where code and verification both exist.
 - [x] 5.5 `scripts/research_frontend_smoke.py` → 63 checks pass on dev **and** on the production build.
 - [x] 5.6 Confirm no backend/frontend-Next.js file changed by this work.
 
-## 6. Out of scope (engine work, tracked by their own changes)
+## 6. Out of scope for *this* change (engine work)
 
-- [ ] 6.1 Band/schema identity and mismatch overrides (harden 2.x).
-- [ ] 6.2 Study-area masking in inference and exports (harden 3.1–3.3).
-- [ ] 6.3 Out-of-core / limited-memory inference (harden 4.2).
-- [ ] 6.4 Binary interpretation products and crosswalk persistence (phase-1).
-- [ ] 6.5 Durable batches, decisions and seeds (phase-2).
-- [ ] 6.6 Manifests, checksums, experiment groups (phase-3).
-- [ ] 6.7 Calibration, coverage and area error (phase-5).
-- [ ] 6.8 Scene classification and area-change products (phase-4).
+These were explicitly outside this frontend-only change. They have since been
+delivered by their own changes, so the boxes are ticked **here with a pointer**,
+not because this change implemented them:
+
+- [x] 6.1 Band/schema identity and mismatch overrides (harden 2.x) — delivered by
+      `harden-pixel-classification-contract` (`band_schema`, verified contract,
+      explicit override recorded on the request).
+- [x] 6.2 Study-area masking in inference and exports (harden 3.1–3.3) — delivered by
+      `harden-pixel-classification-contract` (`study_area_mask`, rule recorded in the
+      raster tags and the response).
+- [x] 6.3 Out-of-core / limited-memory inference (harden 4.2) — delivered by
+      `harden-pixel-classification-contract` (windowed reads in `inference_service`).
+- [x] 6.4 Binary interpretation products and crosswalk persistence (phase-1) —
+      delivered by `phase-1-water-classification`.
+- [x] 6.5 Durable batches, decisions and seeds (phase-2) — delivered by
+      `phase-2-active-learning-provenance`.
+- [x] 6.6 Manifests, checksums, experiment groups (phase-3) — delivered by
+      `phase-3-experiment-lineage`.
+- [x] 6.7 Calibration, coverage and area error (phase-5) — delivered by
+      `phase-5-research-evaluation` (`metrics_service`, `research_service`).
+- [x] 6.8 Scene classification and area-change products (phase-4) — delivered by
+      `phase-4-temporal-water-mapping`.
