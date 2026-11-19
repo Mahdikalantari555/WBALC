@@ -151,21 +151,23 @@ cmd_up() {
   compose up -d --remove-orphans "${build[@]}" "${COMPOSE_ARGS[@]:-}"
 
   say ""
-  say "${DIM}waiting for the engine healthcheck…${RESET}"
-  local tries=0
-  until curl -fsS "http://localhost:${API_PORT:-8000}/health" >/dev/null 2>&1; do
+  say "${DIM}waiting for the workspace adapter and engine…${RESET}"
+  local tries=0 response
+  local health="http://localhost:${FRONTEND_PORT:-3000}/api/health"
+  while :; do
+    response="$(curl -fsS -m 2 "$health" 2>/dev/null || true)"
+    if grep -Eq '"adapter":[[:space:]]*true' <<<"$response" && grep -Eq '"engine":[[:space:]]*true' <<<"$response"; then
+      ok "workspace adapter and engine are healthy"
+      break
+    fi
     tries=$((tries + 1))
     if [ "$tries" -ge 60 ]; then
-      warn "engine did not answer /health within 60s — check: ./scripts/dev.sh logs api"
-      break
+      compose ps
+      die "workspace is not ready: check ./scripts/dev.sh logs frontend and ./scripts/dev.sh logs api"
     fi
     sleep 1
   done
-  if curl -fsS "http://localhost:${API_PORT:-8000}/health" >/dev/null 2>&1; then
-    ok "engine healthy: $(curl -fsS "http://localhost:${API_PORT:-8000}/health")"
-  fi
 
-  # Report every service, so a crashed UI is visible even though `up -d` succeeded.
   compose ps
   urls
   say "${DIM}stop with: ./scripts/dev.sh down${RESET}"

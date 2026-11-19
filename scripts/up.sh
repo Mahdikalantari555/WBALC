@@ -28,7 +28,8 @@ LOG_DIR="$RUN_DIR/logs"
 
 FRONTEND=1
 DEV_MODE=0
-COMMAND=""
+COMMAND="up"
+LOG_SERVICE="engine"
 
 API_PORT="${API_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
@@ -51,7 +52,11 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    up|down|status|logs) COMMAND="$1"; shift ;;
+    up|down|status) COMMAND="$1"; shift ;;
+    logs)
+      COMMAND=logs; shift
+      case "${1:-}" in engine|frontend|frontend-build) LOG_SERVICE="$1"; shift ;; esac
+      ;;
     --research) shift ;; # compatibility: the workspace is now always enabled
     --no-frontend) FRONTEND=0; shift ;;
     --dev) DEV_MODE=1; shift ;;
@@ -59,9 +64,18 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1 (try --help)" ;;
   esac
 done
-[ -n "$COMMAND" ] || usage 1
 
-port_busy() { curl -fsS -m 1 "http://localhost:$1/" >/dev/null 2>&1; }
+healthy() {
+  local url="$1" response
+  response="$(curl -fsS -m 2 "$url" 2>/dev/null)" || return 1
+  case "$url" in
+    */api/health)
+      # The adapter returns HTTP 200 even when the engine is unreachable.
+      grep -Eq '"adapter":[[:space:]]*true' <<<"$response" && grep -Eq '"engine":[[:space:]]*true' <<<"$response"
+      ;;
+    *) grep -Eq '"status":[[:space:]]*"ok"' <<<"$response" ;;
+  esac
+}
 
 pid_alive() {
   local pidfile="$1"
@@ -73,7 +87,7 @@ pid_alive() {
 
 wait_for() { # url, seconds, label
   local url="$1" limit="$2" label="$3" waited=0
-  until curl -fsS -m 2 "$url" >/dev/null 2>&1; do
+  until healthy "$url"; do
     waited=$((waited + 1))
     if [ "$waited" -ge "$limit" ]; then
       warn "$label did not answer $url within ${limit}s"
@@ -97,11 +111,14 @@ ensure_venv() {
 }
 
 ensure_node() {
-  local dir="$1"
-  command -v npm >/dev/null 2>&1 || die "npm is required for the UI services"
-  if [ ! -d "$dir/node_modules" ]; then
-    say "${DIM}installing node modules in ${dir#"$ROOT"/}${RESET}"
-    ( cd "$dir" && npm ci --no-audit --no-fund >/dev/null 2>&1 || npm install --no-audit --no-fund >/dev/null 2>&1 )
+  local dir="$1" fingerprint stamp
+  command -v npm >/dev/null 2>&1 || die "Node.js and npm are required for the workspace"
+  fingerprint="$(cd "$dir" && node -e 'const fs=require("node:fs"), h=require("node:crypto").createHash("sha256"); for(const file of ["package.json","package-lock.json"]) h.update(fs.readFileSync(file)); console.log(h.update(process.version).digest("hex"))')"
+  stamp="$dir/node_modules/.wbalc-deps"
+  if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$fingerprint" ]; then
+    say "${DIM}synchronizing locked dependencies in frontend/${RESET}"
+    ( cd "$dir" && npm ci --include=dev --no-audit --no-fund ) || die "frontend dependency installation failed"
+    printf '%s\n' "$fingerprint" >"$stamp"
   fi
 }
 
@@ -135,7 +152,7 @@ cmd_up() {
   mkdir -p "$RUN_DIR" "$LOG_DIR"
 
   # ---------------------------------------------------------------- engine
-  if port_busy "$API_PORT/health" 2>/dev/null || curl -fsS -m 1 "http://localhost:$API_PORT/health" >/dev/null 2>&1; then
+  if healthy "http://localhost:$API_PORT/health"; then
     ok "engine already answering on :$API_PORT (reusing it)"
   else
     ensure_venv
@@ -150,14 +167,14 @@ cmd_up() {
 
   # ------------------------------------------------------ research workspace
   if [ "$FRONTEND" = 1 ]; then
-    if curl -fsS -m 1 "http://localhost:$FRONTEND_PORT/" >/dev/null 2>&1; then
+    if healthy "http://localhost:$FRONTEND_PORT/api/health"; then
       ok "research workspace already answering on :$FRONTEND_PORT (reusing it)"
     else
       local dir="$ROOT/frontend"
       ensure_node "$dir"
       if [ "$DEV_MODE" = 1 ]; then
         start_bg frontend "$dir" env RSAL_API_URL="http://localhost:$API_PORT" PORT="$FRONTEND_PORT" \
-          npx vite dev --host 0.0.0.0 --port "$FRONTEND_PORT"
+          npm run dev -- --port "$FRONTEND_PORT" --strictPort
       else
         say "${DIM}building research workspace${RESET}"
         ( cd "$dir" && npm run build >"$LOG_DIR/frontend-build.log" 2>&1 ) \
@@ -166,7 +183,7 @@ cmd_up() {
           HOST=0.0.0.0 ORIGIN="${ORIGIN:-http://localhost:$FRONTEND_PORT}" \
           BODY_SIZE_LIMIT="${BODY_SIZE_LIMIT:-545259520}" node build
       fi
-      wait_for "http://localhost:$FRONTEND_PORT/" 60 "research workspace" || die "workspace failed to start: see .run/logs/frontend.log"
+      wait_for "http://localhost:$FRONTEND_PORT/api/health" 60 "research workspace" || die "workspace failed to start: see .run/logs/frontend.log"
     fi
   fi
 
@@ -226,7 +243,7 @@ cmd_status() {
   else
     warn "engine    :$API_PORT  down"
   fi
-  if curl -fsS -m 2 "http://localhost:$FRONTEND_PORT/" >/dev/null 2>&1; then
+  if healthy "http://localhost:$FRONTEND_PORT/api/health"; then
     ok "workspace :$FRONTEND_PORT  up"
   else
     warn "workspace :$FRONTEND_PORT  down"
@@ -252,6 +269,6 @@ case "$COMMAND" in
   up) cmd_up ;;
   down) cmd_down ;;
   status) cmd_status ;;
-  logs) shift || true; cmd_logs "${1:-engine}" ;;
+  logs) cmd_logs "$LOG_SERVICE" ;;
   *) usage 1 ;;
 esac

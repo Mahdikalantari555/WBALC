@@ -24,5 +24,5 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 EXPOSE 5173
 HEALTHCHECK --interval=15s --timeout=4s --start-period=10s --retries=4 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||5173)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||5173)+'/api/health').then(r=>{if(!r.ok)throw Error();return r.json()}).then(body=>process.exit(body.adapter===true&&body.engine===true?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "build"]

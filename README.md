@@ -77,7 +77,7 @@ SQLite). It checks those first and says what to fix. `docker compose up -d
 
 ```bash
 ./scripts/up.sh                    # engine :8000 + SvelteKit workspace :3000
-./scripts/up.sh --dev   # uvicorn --reload + vite dev (HMR)
+./scripts/up.sh --dev              # uvicorn --reload + vite dev (HMR)
 ./scripts/up.sh status
 ./scripts/up.sh logs engine
 ./scripts/up.sh down
