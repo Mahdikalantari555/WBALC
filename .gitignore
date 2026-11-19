@@ -23,3 +23,7 @@ project-test/
 
 # pid files + logs written by scripts/up.sh
 .run/
+
+# Local visual QA captures (never commit screenshots)
+.screenshots/
+docs/screenshots/*.png

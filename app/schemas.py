@@ -115,7 +115,11 @@ class ProjectCreate(BaseModel):
         cleaned = [c.strip() for c in v]
         if any(not c for c in cleaned):
             raise ValueError("class names must be non-empty")
-        if len(set(cleaned)) != len(cleaned):
+        if len(cleaned) < 2:
+            raise ValueError("provide at least two class names")
+        if any(len(name) > 255 for name in cleaned):
+            raise ValueError("class names cannot exceed 255 characters")
+        if len({name.casefold() for name in cleaned}) != len(cleaned):
             raise ValueError("class names must be unique")
         return cleaned
 
@@ -468,6 +472,7 @@ class QueryBatchSummary(BaseModel):
     notes: list[str] = Field(default_factory=list)
     note: str | None = None
     created_at: datetime
+    samples_added: int = 0
     # Decision counts per state, so a list view needs no per-item fetch.
     decisions: dict[str, int] = Field(default_factory=dict)
 

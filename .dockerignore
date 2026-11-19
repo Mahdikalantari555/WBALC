@@ -11,9 +11,8 @@ openspec
 .env
 README.md
 docker-compose.yml
-# Not needed in the API image — keep the build context small (frontend can
+# Not needed in the API image — keep the build context small (the workspace can
 # carry a huge node_modules/ if you ran npm install locally).
-frontend
 scripts
 node_modules
 .next

@@ -10,7 +10,7 @@ from typing import Literal
 
 import anyio
 from fastapi import APIRouter, Form, HTTPException, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
 from ..models import Scene
@@ -239,6 +239,15 @@ async def get_scene(project_id: int, scene_id: int, session: SessionDep, setting
     if scene is None or scene.project_id != project_id:
         raise HTTPException(status_code=404, detail=f"Scene {scene_id} not found in project {project_id}")
     return _scene_out(scene, settings)
+
+
+@router.get("/{scene_id}/file")
+async def scene_file(project_id: int, scene_id: int, session: SessionDep) -> FileResponse:
+    await get_project(session, project_id)
+    scene = await session.get(Scene, scene_id)
+    if scene is None or scene.project_id != project_id or not Path(scene.storage_path).is_file():
+        raise HTTPException(404, "Scene file not found in this project")
+    return FileResponse(scene.storage_path, media_type="image/tiff", filename=scene.source_filename)
 
 
 @router.get("/{scene_id}/spatial", response_model=SceneSpatialOut)

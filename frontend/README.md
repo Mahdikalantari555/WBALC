@@ -1,150 +1,89 @@
-# TerraLab — RSAL frontend
+# WBALC research workspace (SvelteKit)
 
-Human insight. Earth intelligence. A satellite active-learning workspace wired
-**exclusively** to the RSAL FastAPI backend — every query, label, training run,
-and metric is real. There is no demo mode and no frontend database.
+The primary WBALC frontend, with English and Persian (RTL). Observations, labels,
+metrics, predictions, and rasters come from the live FastAPI engine through a
+server-side adapter. The root launchers serve this workspace on port 3000.
 
-## What you can do
+## Runs against WBALC (RSAL)
 
-- **Projects** — create projects with 2–12 land-cover classes; live stats
-  (labels, patches, accuracy, F1, model version) come from the backend.
-- **Datasets** — drag-and-drop GeoTIFF upload (≤100 MB), metadata inspector,
-  2D/3D preview, download-free client-side band rendering (true color, false
-  color/NIR, NDVI, custom RGB), dataset deletion (cascades labels + exports).
-- **Active learning** — query batches with diversity (cold start), entropy,
-  margin, least-confidence, or hybrid strategies; review on a Leaflet map
-  (WGS84 basemap, or pixel-space view for scenes without a CRS) with real patch
-  outlines and patch-accurate spectral previews.
-- **Labeling** — keyboard-first review (`1–9` class, `Enter` accept, `S` skip,
-  `←/→` navigate, `N` note, `P` point, `?` help), batch grid mode with
-  accept-all, point/polygon/rectangle drawing, GeoJSON/CSV import with class
-  mapping, label correction (versioned) and deletion.
-- **Analytics** — learning curve from real training history, class
-  distribution, confusion matrix, per-class precision/recall/F1/support,
-  CSV + JSON export.
+```sh
+# 1. Start the engine (repo root)
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-## Architecture
-
-```
-Browser ── /api/* (Next.js route handlers = BFF adapter) ── RSAL_API_URL ──► FastAPI
-```
-
-- `src/lib/server/` — the adapter: translates browser shapes to the RSAL
-  contract, reprojects coordinates with proj4 (UTM/NAD83/WGS84), fans out
-  project stats, proxies raster bytes, and passes backend errors through
-  with actionable messages. `RSAL_API_TOKEN` never reaches the browser.
-- `src/stores/review-queue.ts` — RSAL queries are stateless, so the current
-  batch persists in the browser (zustand + localStorage) and is reconciled
-  with saved labels from `GET /labels`.
-- `src/lib/geotiff.ts` — renders band combinations in-browser from the
-  original GeoTIFF (2–98% stretch, ≤1200 px). Reads use HTTP Range requests, so
-  opening a scene costs a few KB and a review thumbnail costs a windowed read of
-  exactly that patch's pixels (`renderPatch`), not a scaled copy of the scene.
-  One parsed handle + stretch per dataset (LRU, 3).
-- `src/lib/geo.ts` — the single pixel↔display transform, shared verbatim by the
-  BFF adapter and the browser. Thumbnails, markers, patch footprints, the warped
-  raster overlay and submitted labels all go through it, so a pixel has one
-  meaning everywhere. It also mirrors the backend patch grid
-  (`gridAxis`/`cellWindow`, including the clamped last row/column).
-- Georeferencing: a north-up UTM scene is drawn on the WGS84 basemap with its
-  basemap tiles; rotated or sheared scenes are **warped** onto the basemap with
-  the same corner fit that places the markers (a plain north-up image overlay
-  would put the imagery up to a few patches away from the labels). Scenes whose
-  reprojection is not affine (no CRS, unsupported CRS, or a fit residual >2% of
-  the scene span) fall back to a pixel-space map (Leaflet `CRS.Simple`, no
-  basemap) with the reason stated in the map attribution; labels are then stored
-  in pixel coordinates.
-- Map layers are scoped to the active dataset: samples and drafts belonging to
-  another scene are never drawn on top of the current one.
-- A saved label reloads exactly where its query sample was drawn: the pin is the
-  patch *centre* (not the clicked point or the patch origin), and the footprint
-  is recovered from the stored geometry in whichever space RSAL kept it
-  (`map` = projected CRS, or `pixel`). `patchWindowForLabel` in `lib/geo.ts` is
-  the one implementation, unit-tested for both spaces.
-
-### Model layers
-
-Once a project has a checkpoint, the map can show what the model thinks about
-the scene on screen:
-
-- **Classification** — one flat colour per cell, from the shared class palette
-  (`lib/palette.ts`, identical to the backend's `CLASS_PALETTE`). The layer panel
-  states whether the field is *pixel-level* (one prediction per source pixel) or
-  *patch cells* (one value per patch, block-filled), together with the cell size,
-  so a cell map is never read as per-pixel inference. Individual classes can be
-  hidden, which is how you check one class at a time.
-- **Uncertainty** — the scalar field from `al_service.uncertainty_scores`
-  (`entropy`, `margin` or `least_confidence`), painted on a cool→warm ramp.
-  The ramp is stretched over the field's own min/max because a trained model's
-  entropy rarely spans 0..1; the legend prints both endpoints and says so.
-
-Both layers default **off**, persist across reloads, have independent opacity
-sliders, and paint as a single `ImageOverlay` per field (`image-rendering:
-pixelated`, one canvas pixel per cell) so panning and zooming cost nothing. If a
-newer training run exists than the one that produced the field, the panel says
-so instead of silently showing stale colours; if the model's band count does not
-match the dataset, the layers are hidden with an explanation.
-
-`src/lib/layers.ts` holds the vocabulary shared by the server routes and the
-browser (`MAP_LAYERS`, `UNCERTAINTY_METHODS`, `isUncertaintyMethod`);
-`src/lib/overlay.ts` holds the painting (`fieldToDataUrl`, `uncertaintyColor`,
-`UNCERTAINTY_RAMP`). `src/lib/server/map-routes.ts` is the BFF side, wrapped by
-the thin `app/api/projects/[id]/map/**` route handlers.
-
-Exports download the field you are looking at: GeoTIFF (with colormap, `grid`
-and `method` tags), PNG (the same picture, invalid cells transparent) or CSV
-(one row per cell with class, probability, uncertainty and pixel windows). The
-layers panel links them per layer; the analytics view has a **Maps** card
-listing every export with its iteration and staleness. Submitting labels or
-training invalidates the cached fields, so a visible layer switches to the new
-model's output immediately instead of showing the previous run's colours.
-
-## Run locally
-
-Start the backend first (repo root):
-
-```bash
-.venv/bin/uvicorn app.main:app --port 8000
-```
-
-Then:
-
-```bash
+# 2. Start this app
 cd frontend
-npm install
-cp .env.example .env.local        # optional; defaults to http://localhost:8000
-npm run dev                       # http://localhost:3000
-npm test                          # geo, overlay and adapter-payload tests (node:test)
-npm run typecheck && npm run lint
+npm ci
+RSAL_API_URL=http://localhost:8000 npm run dev
 ```
 
-Production: `npm run build && npm start`. Quality gates: `npm run typecheck`,
-`npm run lint`.
+Open the URL Vite prints (default <http://localhost:5173>). The engine URL is read
+**on the server only**; the browser never talks to RSAL, so there is no CORS
+surface and no backend URL in the client bundle.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `RSAL_API_URL` | `http://localhost:8000` | Backend base URL (server-side only) |
-| `RSAL_API_TOKEN` | — | Optional bearer token, kept server-side |
+### Environment variables
 
-## Docker
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `RSAL_API_URL` | `http://localhost:8000` | Base URL of the WBALC engine (server-side). |
+| `RSAL_API_TOKEN` | unset | Optional bearer token sent as `authorization` on adapter requests. |
+| `PORT` | `5173` | Port the dev/preview/Node server binds to. |
+| `HOST` | `0.0.0.0` | Bind address for the production Node server. |
+| `BODY_SIZE_LIMIT` | `545259520` in Docker/native launcher | Multipart envelope limit in bytes. Set this when running `node build` directly (adapter-node otherwise defaults to 512 KiB). |
+| `ORIGIN` | `http://localhost:3000` in Docker/native launcher | Set to the public frontend URL for production behind a reverse proxy. |
 
-From the repo root: `docker compose up -d --build` starts the API on `:8000`
-and this frontend on `:3000` (`RSAL_API_URL=http://api:8000`). The image is a
-multi-stage build running the Next.js standalone server as a non-root user.
-`npm ci` uses long fetch timeouts/retries and a BuildKit cache mount; on a slow
-or restricted network set `NPM_REGISTRY` in the root `.env` (or
-`--build-arg NPM_REGISTRY=...`) to build through a mirror. The lockfile already
-includes the Alpine/musl native binaries, so no extra system packages are needed.
+Copy [`.env.example`](.env.example) to `.env` for local development.
 
-## End-to-end smoke test
+## Scripts
 
-With both services running (repo root):
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Vite dev server with HMR (`0.0.0.0:5173`). |
+| `npm run build` | Production build (`adapter-node`, output in `build/`). |
+| `npm start` | Serve the production build (`node build`). |
+| `npm run check` | `svelte-check` + TypeScript diagnostics. |
+| `npm test` | Vitest: geometry, adapter shaping, i18n and jsdom component tests. |
+| `npm run check:i18n` | Fails if the `en`/`fa` dictionaries diverge or placeholders differ. |
 
-```bash
-.venv/bin/python scripts/frontend_smoke.py --base http://localhost:3000
-```
+## Workspace views
 
-Creates a project, uploads a synthetic GeoTIFF, and exercises the whole loop
-through the browser-facing API: cold-start diversity query → labels → train →
-metrics → model-based queries → corrections → polygon labels → import →
-deletes → cleanup.
+| View | Reads from the engine |
+| --- | --- |
+| Project & data | Create a study, upload a GeoTIFF for training, or register a dated scene |
+| Overview | projects, datasets, scenes, labels, training runs → readiness checklist, acquisition timeline, latest metrics |
+| Geospatial Workspace | original GeoTIFF bytes (`/dataset/{id}/file`), `/predict/map` hard + uncertainty fields, labels |
+| Temporal Analysis | `/scenes` metadata and native-grid comparison (no implicit alignment) |
+| Active Learning | Durable query batches, labeling and GeoJSON import, model training, JSON research path and CSV sample ledger |
+| Model Arena | `/metrics/history` runs, confusion matrix, per-class metrics |
+| Results & Evaluation | recorded protocol, per-class IoU, label distribution, CSV/JSON export |
+
+## Design notes
+
+- **Adapter (BFF).** `src/routes/api/**` proxies RSAL with `$env/dynamic/private`
+  and translates engine payloads into the view models in `src/lib/types.ts`
+  (`src/lib/server/adapter.ts`). Values RSAL does not provide stay `null`; the UI
+  renders an empty state rather than a fabricated number.
+- **Rasters are read, never rewritten.** `src/lib/raster.ts` opens the original
+  GeoTIFF with geotiff.js using HTTP Range requests (forwarded by the adapter)
+  and paints the requested band mode on a canvas. No reprojection, resampling or
+  caching of derived pixels on the server.
+- **Two coordinate systems, never mixed.** A dataset is drawn on a WGS84 overlay
+  when it has a usable CRS (EPSG:4326, EPSG:3857, or a WGS84/NAD83 UTM zone) and
+  a north-up affine; otherwise the map switches to pixel space (`CRS.Simple`) and
+  says so. Unsupported CRSs are reported, not guessed (`src/lib/geo.ts`).
+- **Durable rounds.** Query batches and submitted decisions are stored in the
+  engine. Drafts are browser-local. The research-path export includes all
+  persisted rounds, even those outside the recent-history display.
+- **Bilingual with no i18n dependency.** `src/lib/i18n/` holds typed `en`/`fa`
+  dictionaries and a locale store; `src/hooks.server.ts` stamps `<html lang dir>`
+  from the `wbalc.locale` cookie so the first paint is already correct, and a
+  runtime switch updates strings, direction and `Intl` formatting without a
+  reload. Layout uses logical (`ms-`, `me-`, `ps-`, `pe-`, `text-start`) CSS.
+## Scope and limitations
+
+- Single-workspace, no authentication; the adapter forwards an optional token but
+  the app has no user model.
+- Unsaved review state is per browser.
+- The engine's own limits still apply: uncertainty/hybrid queries need a
+  patch-resolution checkpoint, and identical band counts are not proof of
+  compatible spectral schemas.
+- No imagery is bundled. On an empty engine, use **Project & data** to create your first project.

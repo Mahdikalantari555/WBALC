@@ -2,10 +2,9 @@
 #
 # One command to bring the whole WBALC stack up (or inspect it).
 #
-#   ./scripts/dev.sh up                  engine + Next.js UI
-#   ./scripts/dev.sh up --research       ... plus the SvelteKit research workspace
+#   ./scripts/dev.sh up                  engine + SvelteKit research workspace
 #   ./scripts/dev.sh up --postgres       ... with Postgres instead of SQLite
-#   ./scripts/dev.sh up --all            both of the above
+#   ./scripts/dev.sh up --all            enable Postgres
 #   ./scripts/dev.sh up --build          force a rebuild first
 #   ./scripts/dev.sh logs [service]      follow logs
 #   ./scripts/dev.sh ps                  status + health of each service
@@ -24,7 +23,6 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-PROFILE_RESEARCH=0
 PROFILE_POSTGRES=0
 FORCE_BUILD=0
 COMMAND=""
@@ -52,9 +50,9 @@ usage() {
 while [ $# -gt 0 ]; do
   case "$1" in
     up|down|ps|logs|smoke|build|pull|restart|config) COMMAND="$1"; shift ;;
-    --research) PROFILE_RESEARCH=1; shift ;;
+    --research) shift ;; # compatibility: the workspace is now always enabled
     --postgres) PROFILE_POSTGRES=1; shift ;;
-    --all) PROFILE_RESEARCH=1; PROFILE_POSTGRES=1; shift ;;
+    --all) PROFILE_POSTGRES=1; shift ;;
     --build) FORCE_BUILD=1; shift ;;
     -h|--help) usage 0 ;;
     --) shift; COMPOSE_ARGS+=("$@"); break ;;
@@ -82,7 +80,7 @@ Start Docker, or check 'docker context ls'. (Sandboxes without a daemon cannot r
   fi
 }
 
-# A stale local dev server on 8000/3000/5173 makes `up` fail with a confusing
+# A stale local dev server on 8000/3000 makes `up` fail with a confusing
 # "bind: address already in use". Say which port and what is on it.
 check_port() {
   local port="$1" label="$2"
@@ -96,7 +94,6 @@ check_port() {
 
 profiles_list() {
   local p=()
-  [ "$PROFILE_RESEARCH" = 1 ] && p+=("research")
   [ "$PROFILE_POSTGRES" = 1 ] && p+=("postgres")
   local IFS=,
   printf '%s' "${p[*]:-}"
@@ -136,9 +133,6 @@ urls() {
   say ""
   say "  ${BOLD}engine${RESET}            http://localhost:${api}/docs   ${DIM}(OpenAPI)${RESET}"
   say "  ${BOLD}workspace${RESET}         http://localhost:${front}"
-  if [ "$PROFILE_RESEARCH" = 1 ]; then
-    say "  ${BOLD}research${RESET}          http://localhost:${RESEARCH_PORT:-5173}"
-  fi
   say ""
 }
 
@@ -147,17 +141,14 @@ cmd_up() {
   need_docker
   local conflicts=0
   check_port "${API_PORT:-8000}" "engine API" API_PORT || conflicts=1
-  check_port "${FRONTEND_PORT:-3000}" "Next.js workspace" FRONTEND_PORT || conflicts=1
-  if [ "$PROFILE_RESEARCH" = 1 ]; then
-    check_port "${RESEARCH_PORT:-5173}" "research workspace" RESEARCH_PORT || conflicts=1
-  fi
+  check_port "${FRONTEND_PORT:-3000}" "SvelteKit workspace" FRONTEND_PORT || conflicts=1
   [ "$conflicts" = 0 ] || die "resolve the port conflicts above (or change the *_PORT vars), then retry"
   check_postgres_env
 
   local build=()
   [ "$FORCE_BUILD" = 1 ] && build=(--build)
   say "${DIM}$ compose $(profiles_list | sed 's/^/--profile /') up -d ${build[*]}${RESET}"
-  compose up -d "${build[@]}" "${COMPOSE_ARGS[@]:-}"
+  compose up -d --remove-orphans "${build[@]}" "${COMPOSE_ARGS[@]:-}"
 
   say ""
   say "${DIM}waiting for the engine healthcheck…${RESET}"
@@ -229,19 +220,9 @@ cmd_smoke() {
   local api="${API_PORT:-8000}" front="${FRONTEND_PORT:-3000}"
   curl -fsS "http://localhost:${api}/health" >/dev/null || die "engine not reachable on :${api} — is the stack up?"
 
-  say "${BOLD}frontend smoke${RESET} (Next.js workspace on :${front})"
-  if curl -fsS "http://localhost:${front}/" >/dev/null 2>&1; then
-    "$py" scripts/frontend_smoke.py --base "http://localhost:${front}" || die "frontend smoke failed"
-  else
-    warn "nothing answering on :${front} — skipped (start with ./scripts/dev.sh up)"
-  fi
-
-  if [ "$PROFILE_RESEARCH" = 1 ] || curl -fsS "http://localhost:${RESEARCH_PORT:-5173}/" >/dev/null 2>&1; then
-    say ""
-    say "${BOLD}research workspace smoke${RESET} (:${RESEARCH_PORT:-5173})"
-    "$py" scripts/research_frontend_smoke.py --base "http://localhost:${RESEARCH_PORT:-5173}" \
-      || die "research smoke failed"
-  fi
+  say "${BOLD}research workspace smoke${RESET} (:${front})"
+  "$py" scripts/research_frontend_smoke.py --base "http://localhost:${front}" \
+    --backend "http://localhost:${api}" || die "research smoke failed"
 }
 
 case "$COMMAND" in

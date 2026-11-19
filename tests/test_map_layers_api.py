@@ -21,10 +21,8 @@ from app.services.inference_service import (
 )
 
 FRONTEND_PALETTE = (
-    Path(__file__).resolve().parents[1] / "frontend" / "src" / "lib" / "palette.ts"
-)
-FRONTEND_OVERLAY = (
-    Path(__file__).resolve().parents[1] / "frontend" / "src" / "lib" / "overlay.ts"
+    Path(__file__).resolve().parents[1] / "frontend"
+    / "src" / "lib" / "palette.ts"
 )
 
 
@@ -288,7 +286,7 @@ class TestExports:
         )
 
     def test_backend_and_frontend_uncertainty_ramp_identical(self):
-        source = FRONTEND_OVERLAY.read_text()
+        source = FRONTEND_PALETTE.read_text()
         block = re.search(r"UNCERTAINTY_RAMP\s*=\s*\[(.*?)\]", source, re.S)
         assert block, "UNCERTAINTY_RAMP not found in frontend overlay"
         frontend = re.findall(r"'(#[0-9a-fA-F]{6})'", block.group(1))
