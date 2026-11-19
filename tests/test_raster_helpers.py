@@ -17,6 +17,7 @@ from app.services.raster_service import (
     RasterError,
     sample_id,
 )
+from app.services.schema_service import SchemaConflict, classification_band_selection
 
 
 class TestGrid:
@@ -44,6 +45,38 @@ class TestGrid:
     def test_sample_id_roundtrip(self):
         assert parse_sample_id(sample_id(3, 2, 5)) == (3, 2, 5)
         assert parse_sample_id("not-a-patch") is None
+
+
+class TestClassificationBandSelection:
+    def test_excludes_declared_scl_and_preserves_predictor_order(self):
+        selection = classification_band_selection(
+            {
+                "declared": True,
+                "band_names": ["B02", "SCL_20m", "B11"],
+            },
+            3,
+        )
+        assert selection == {
+            "indices": [0, 2],
+            "names": ["B02", "B11"],
+            "excluded_indices": [1],
+            "excluded_names": ["SCL_20m"],
+        }
+
+    def test_undeclared_names_are_not_used_to_guess_qa_positions(self):
+        selection = classification_band_selection(
+            {"declared": False, "band_names": ["blue", "SCL"]},
+            2,
+        )
+        assert selection["indices"] == [0, 1]
+        assert selection["excluded_indices"] == []
+
+    def test_scl_only_inputs_have_no_classification_predictors(self):
+        with pytest.raises(SchemaConflict, match="no classification predictor bands"):
+            classification_band_selection(
+                {"declared": True, "band_names": ["SCL_20m", "SCL_60m"]},
+                2,
+            )
 
 
 class TestFeatures:

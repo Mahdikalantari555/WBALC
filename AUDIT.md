@@ -120,3 +120,52 @@ change (per-view code splitting and map-field memoization).
 - Test tooling still emits non-failing deprecation notices for Vitest's
   `environmentMatchGlobs`, Starlette's `httpx` test client integration, and
   Rasterio's affine multiplication operator.
+
+## Schema-provenance and fusion follow-up (2026-11-19)
+
+- Band names are trusted only when a file's schema actually declares them
+  (`band_schema.declared`): predictor selection, SCL/QA exclusion and the
+  research multi-dataset compatibility gate use only declared names. An
+  undeclared schema can no longer be guessed into a band identity, and an
+  SCL-only upload fails with `SchemaConflict` instead of silently training on
+  QA bands.
+- Every inference-style endpoint now reports which bands it actually used:
+  `predictor_band_indices/names` and `excluded_band_indices/names` are returned
+  by `/predict`, `/predict/map`, `/som`, `/som/classify` and by research
+  feature extraction (per-dataset under `feature_selection.by_dataset`), and
+  are embedded in the tags of every exported GeoTIFF (hard / probability /
+  uncertainty / binary / SOM, pixel and patch-cell mode, dataset and scene
+  products), so an artifact always states its own band contract.
+- The frontend upload button stays disabled until band names are valid and the
+  operator has confirmed the mapping, and the dataset selector offers one
+  entry per dataset, including the dataset created for a registered scene.
+- The raster stack builds its output grid on the sources' common overlap, now
+  also for nested resolutions (for example a 10 m band plus a coarser 20 m
+  band): the output grid is the coarsest grid cropped to the shared footprint,
+  finer bands are aggregated/resampled onto it, and the 10 m + 20 m case has a
+  dedicated regression test.
+- Temporal fusion rework: weights must be positive and finite, a repeated
+  `priority` entry is rejected, weighted rules normalise weights over the
+  participating sources, `require_all` really requires every source (including
+  zero-weight ones) to be valid, `weighted_vote` casts one weighted vote per
+  source instead of an argmax over raw weights, and a pixel supported only by
+  zero-weight sources is nodata rather than a fabricated uniform class.
+- Registering a scene creates the dataset that the active-learning query needs
+  (cold start), and the shared scene file survives until the last referencing
+  dataset is deleted.
+
+### Follow-up verification and residuals
+
+- `./.venv/bin/python -m pytest -q --disable-warnings`: **381 passed, 1
+  skipped** (PowerShell-only Windows test), **382 collected**.
+- `frontend`: `npm test` **121 passed**; `npm run check` **0 errors / 0
+  warnings**; `npm run check:i18n` **668 matching keys**; production build
+  passed.
+- `git diff --check` clean for the whole change set.
+- Residuals (unchanged): the default element cap of 250M still excludes a
+  full-scene three-band Sentinel-2 stack (361,681,200 elements); identical
+  GSD/CRS is still not required across training sources; fusion operates on
+  probability/class products, never raw bands; joint calibration and temporal
+  spacing between fused dates are not modelled; Zarr remains unsupported; and
+  a 10 m source is never degraded to a 20 m training grid (the stack's 20 m
+  output aggregation is an intake product, not a training downgrade).

@@ -31,11 +31,19 @@ from .raster_service import (
     patch_validity,
     pixel_features,
 )
+from .schema_service import SchemaConflict, classification_band_selection
 from .training_service import TrainingError, build_model, save_checkpoint
 
 
 class ResearchError(ValueError):
     """A research operation the engine refuses rather than approximating."""
+
+
+def _classification_selection(dataset: Dataset) -> dict[str, list]:
+    try:
+        return classification_band_selection(dataset.band_schema, dataset.bands)
+    except SchemaConflict as exc:
+        raise ResearchError(str(exc)) from exc
 
 
 def split_for_project(
@@ -87,7 +95,13 @@ def _features_for(
         kept: list[dict] = []
         for dataset_id, entries in by_dataset.items():
             dataset = datasets[dataset_id]
-            array = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+            selection = _classification_selection(dataset)
+            array = load_raster(
+                dataset.path,
+                dataset.nodata,
+                settings.max_raster_elements,
+                band_indexes=selection["indices"],
+            )
             features, valid = pixel_features(array)
             valid_2d = valid.reshape(dataset.height, dataset.width)
             for entry in entries:
@@ -120,7 +134,13 @@ def _features_for(
     kept = []
     for dataset_id, cells in by_dataset_cells.items():
         dataset = datasets[dataset_id]
-        array = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+        selection = _classification_selection(dataset)
+        array = load_raster(
+            dataset.path,
+            dataset.nodata,
+            settings.max_raster_elements,
+            band_indexes=selection["indices"],
+        )
         grid = make_grid(dataset.height, dataset.width, patch_size, stride)
         features = patch_features(array, grid)
         valid = patch_validity(array, grid)
@@ -185,6 +205,31 @@ async def score_protocol(
 
     patch_size = settings.patch_size
     stride = settings.resolved_stride()
+    used_dataset_ids = sorted({
+        int(entry["dataset_id"])
+        for entry in [*train_entries, *test_entries]
+        if entry.get("dataset_id") is not None and int(entry["dataset_id"]) in datasets
+    })
+    if not used_dataset_ids:
+        raise ResearchError("the declared split contains no samples linked to a dataset")
+    selections = {dataset_id: _classification_selection(datasets[dataset_id]) for dataset_id in used_dataset_ids}
+    if len(used_dataset_ids) > 1 and any(not selection["names"] for selection in selections.values()):
+        raise ResearchError(
+            "Evaluation samples span multiple datasets, but at least one dataset has no "
+            "declared predictor-band names. Their ordered feature schemas cannot be proven compatible."
+        )
+    signatures = {
+        tuple(name.casefold() for name in selection["names"])
+        if selection["names"]
+        else (None, len(selection["indices"]))
+        for selection in selections.values()
+    }
+    if len(signatures) > 1:
+        raise ResearchError(
+            "Evaluation samples use incompatible classification predictor bands; "
+            "the train and test partitions must share one ordered predictor schema."
+        )
+    feature_selection = selections[used_dataset_ids[0]]
 
     def _fit_and_score():
         X_train, y_train, kept_train = _features_for(
@@ -212,6 +257,19 @@ async def score_protocol(
         raise ResearchError(str(exc)) from exc
 
     metrics = summarize(y_test, predicted, class_names)
+    metrics["feature_selection"] = {
+        "predictor_band_names": feature_selection["names"],
+        "excluded_band_names": feature_selection["excluded_names"],
+        "by_dataset": {
+            str(dataset_id): {
+                "predictor_band_indices": selection["indices"],
+                "predictor_band_names": selection["names"],
+                "excluded_band_indices": selection["excluded_indices"],
+                "excluded_band_names": selection["excluded_names"],
+            }
+            for dataset_id, selection in selections.items()
+        },
+    }
     metrics["evaluation"] = f"{split['protocol']}_holdout"
     metrics["n_train"] = len(kept_train)
     metrics["n_test"] = len(kept_test)
@@ -223,6 +281,8 @@ async def score_protocol(
 
     # Persist a checkpoint of the evaluation model so the score is reproducible from
     # bytes, not just from a config dict.
+    checkpoint_dataset = datasets[int(kept_train[0]["dataset_id"])]
+    checkpoint_selection = selections[checkpoint_dataset.id]
     artifact = None
     if checkpoint_dir is not None:
         path = checkpoint_dir / f"eval_{uuid.uuid4().hex[:10]}_{model_type}.joblib"
@@ -235,10 +295,11 @@ async def score_protocol(
                 iteration=0,
                 patch_size=patch_size,
                 stride=stride,
-                bands=int(datasets[kept_train[0]["dataset_id"]].bands),
+                bands=int(checkpoint_dataset.bands),
                 resolution=resolution,
-                band_schema=datasets[kept_train[0]["dataset_id"]].band_schema,
+                band_schema=checkpoint_dataset.band_schema,
                 taxonomy=None,
+                predictor_band_indices=checkpoint_selection["indices"],
             )
         )
         identity = await anyio.to_thread.run_sync(lambda: file_identity(path))

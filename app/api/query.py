@@ -36,6 +36,7 @@ from ..services.query_service import (
 )
 from ..services.label_service import build_training_targets
 from ..services.pipeline import checkpoint_or_409, resolve_inference_contract
+from ..services.schema_service import SchemaConflict, classification_band_selection
 from ..services.raster_service import (
     RasterError,
     load_raster,
@@ -121,6 +122,21 @@ async def query_batch(
             ),
         )
 
+    try:
+        feature_selection = (
+            {
+                "indices": model_checkpoint["predictor_band_indices"],
+                "names": model_checkpoint.get("predictor_band_names") or [],
+                "excluded_indices": model_checkpoint.get("excluded_band_indices") or [],
+                "excluded_names": model_checkpoint.get("excluded_band_names") or [],
+            }
+            if model_checkpoint is not None
+            else classification_band_selection(dataset.band_schema, dataset.bands)
+        )
+    except SchemaConflict as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    predictor_band_indices = feature_selection["indices"]
+
     patch_size = payload.patch_size or (
         model_checkpoint["patch_size"] if model_checkpoint else settings.patch_size
     )
@@ -131,7 +147,12 @@ async def query_batch(
     prediction_classes = list(run.classes) if model_checkpoint is not None else []
 
     def _compute():
-        arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+        arr = load_raster(
+            dataset.path,
+            dataset.nodata,
+            settings.max_raster_elements,
+            band_indexes=predictor_band_indices,
+        )
         grid = make_grid(dataset.height, dataset.width, patch_size, stride)
         X = patch_features(arr, grid)
         valid = patch_validity(arr, grid)
@@ -300,6 +321,10 @@ async def query_batch(
             "exclude_labeled": payload.exclude_labeled,
             "method": method_used,
             "prediction_classes": prediction_classes,
+            "predictor_band_indices": predictor_band_indices,
+            "predictor_band_names": feature_selection["names"],
+            "excluded_band_indices": feature_selection["excluded_indices"],
+            "excluded_band_names": feature_selection["excluded_names"],
         },
         model_iteration=run.iteration if model_checkpoint is not None else None,
         training_run_id=run.id if model_checkpoint is not None else None,

@@ -15,6 +15,8 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
+from .schema_service import classification_band_selection, is_scl_band
+
 SUPPORTED_MODELS = ("rf", "lightgbm")
 CHECKPOINT_FORMAT = "rsal-checkpoint-v2"
 LEGACY_CHECKPOINT_FORMATS = ("rsal-checkpoint-v1",)
@@ -177,10 +179,39 @@ def save_checkpoint(
     resolution: str = "patch",
     band_schema: dict | None = None,
     taxonomy: dict | None = None,
+    predictor_band_indices: list[int] | None = None,
 ) -> None:
     if resolution not in {"patch", "pixel"}:
         raise TrainingError("resolution must be 'patch' or 'pixel'")
     feature_schema = feature_schema_for(resolution)
+    selection = classification_band_selection(band_schema, bands)
+    indices = selection["indices"] if predictor_band_indices is None else list(predictor_band_indices)
+    if (
+        not indices
+        or any(not isinstance(index, (int, np.integer)) or index < 0 or index >= bands for index in indices)
+        or len(set(indices)) != len(indices)
+    ):
+        raise TrainingError("predictor_band_indices must be unique, non-empty, and inside the source band range")
+    source_names = (band_schema or {}).get("band_names")
+    if isinstance(source_names, list) and any(
+        index < len(source_names)
+        and isinstance(source_names[index], str)
+        and is_scl_band(source_names[index])
+        for index in indices
+    ):
+        raise TrainingError("SCL is a QA band and cannot be saved as a classification predictor")
+    selected = set(indices)
+    excluded_indices = [index for index in range(bands) if index not in selected]
+    excluded_names = [
+        source_names[index]
+        for index in excluded_indices
+        if isinstance(source_names, list) and index < len(source_names)
+    ]
+    predictor_names = [
+        source_names[index]
+        for index in indices
+        if isinstance(source_names, list) and index < len(source_names)
+    ]
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -196,6 +227,11 @@ def save_checkpoint(
                 "patch_size": patch_size,
                 "stride": stride,
                 "bands": bands,
+                "predictor_band_indices": [int(index) for index in indices],
+                "predictor_band_names": predictor_names,
+                "excluded_band_indices": excluded_indices,
+                "excluded_band_names": excluded_names,
+                "feature_selection": "classification-bands-v1",
                 "resolution": resolution,
                 "feature_schema": feature_schema,
                 # Ordered band identity (or an explicit, recorded absence of one).
@@ -203,7 +239,7 @@ def save_checkpoint(
                 # Class semantics frozen at training time (taxonomy version,
                 # class order, label crosswalk, binary interpretation).
                 "taxonomy": taxonomy,
-                "n_features": feature_count(bands, feature_schema),
+                "n_features": feature_count(len(indices), feature_schema),
                 "format": CHECKPOINT_FORMAT,
             },
             tmp,
@@ -286,18 +322,41 @@ def validate_checkpoint(data) -> dict:
             "Checkpoint class list is inconsistent with the fitted model's classes."
         )
 
+    indices_declared = "predictor_band_indices" in data
+    raw_indices = data.get("predictor_band_indices") if indices_declared else list(range(int(data["bands"])))
+    if (
+        not isinstance(raw_indices, list)
+        or not raw_indices
+        or any(not isinstance(index, (int, np.integer)) or index < 0 or index >= int(data["bands"]) for index in raw_indices)
+        or len(set(raw_indices)) != len(raw_indices)
+    ):
+        raise CheckpointError("Checkpoint predictor_band_indices are empty, duplicated, or outside the source band range.")
+    predictor_indices = [int(index) for index in raw_indices]
+    source_names = (data.get("band_schema") or {}).get("band_names")
+    if indices_declared and isinstance(source_names, list) and any(
+        index < len(source_names) and isinstance(source_names[index], str) and is_scl_band(source_names[index])
+        for index in predictor_indices
+    ):
+        raise CheckpointError("Checkpoint incorrectly includes SCL as a classification predictor; retrain without SCL.")
+    legacy_scl_predictor = not indices_declared and isinstance(source_names, list) and any(
+        isinstance(name, str) and is_scl_band(name) for name in source_names
+    )
+
     n_features = data.get("n_features")
-    expected_features = feature_count(int(data["bands"]), feature_schema)
+    expected_features = feature_count(len(predictor_indices), feature_schema)
     if n_features is not None and int(n_features) != expected_features:
         raise CheckpointError(
             f"Checkpoint declares {n_features} input features but a {feature_schema} "
-            f"over {data['bands']} bands needs {expected_features}."
+            f"over {len(predictor_indices)} predictor bands needs {expected_features}."
         )
 
     normalised = dict(data)
     normalised.update(
         resolution=resolution,
         feature_schema=feature_schema,
+        predictor_band_indices=predictor_indices,
+        predictor_band_names=data.get("predictor_band_names") or [],
+        legacy_scl_predictor=legacy_scl_predictor,
         n_features=expected_features,
         taxonomy=data.get("taxonomy"),
         legacy=legacy,

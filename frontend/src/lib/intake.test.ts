@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { folderDate, inferBand, planFolder, planManual, validNames } from './intake';
+import { bandSchemaKey, folderDate, inferBand, planFolder, planManual, validNames } from './intake';
 import { channelsFor } from './raster';
 
 function virtual(path: string, content = '') {
@@ -7,6 +7,15 @@ function virtual(path: string, content = '') {
   Object.defineProperty(file, 'webkitRelativePath', { value: path });
   return file;
 }
+
+describe('band confirmation scope', () => {
+  it('shares one confirmation across dates only for the same sensor and ordered mapping', () => {
+    const first = bandSchemaKey('Sentinel-2', ['blue', 'green', 'red', 'SCL']);
+    expect(bandSchemaKey('Sentinel-2', ['BLUE', 'green', 'red', 'scl'])).toBe(first);
+    expect(bandSchemaKey('Sentinel-1', ['blue', 'green', 'red', 'scl'])).not.toBe(first);
+    expect(bandSchemaKey('Sentinel-2', ['green', 'blue', 'red', 'scl'])).not.toBe(first);
+  });
+});
 
 describe('folder intake', () => {
   it('orders named optical/radar bands independently of picker order and retains the acquisition time', async () => {

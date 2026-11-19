@@ -60,6 +60,103 @@ def test_pixel_feature_checkpoint_contract(client, project, dataset):
     assert joblib.load(response.json()["checkpoint"])["resolution"] == "pixel"
 
 
+def test_scl_is_excluded_from_training_and_supervised_prediction_paths(client, project):
+    import joblib
+
+    height = width = 64
+    rng = np.random.default_rng(17)
+    data = np.empty((4, height, width), dtype=np.float32)
+    data[:3, :, :32] = np.array([10, 20, 100], dtype=np.float32)[:, None, None]
+    data[:3, :, 32:] = np.array([80, 90, 30], dtype=np.float32)[:, None, None]
+    data[:3] += rng.normal(0.0, 1.0, size=(3, height, width)).astype(np.float32)
+    data[3] = rng.integers(0, 12, size=(height, width), dtype=np.uint8)
+    stream = io.BytesIO()
+    with rasterio.open(
+        stream,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=4,
+        dtype="float32",
+        crs="EPSG:32631",
+        transform=Affine(10, 0, 500000, 0, -10, 4649776),
+    ) as dst:
+        dst.write(data)
+        for index, name in enumerate(("blue", "green", "red", "SCL_20m"), start=1):
+            dst.set_band_description(index, name)
+    content = stream.getvalue()
+    root = f"/projects/{project['id']}"
+    uploaded = client.post(
+        f"{root}/upload",
+        files={"file": ("scl.tif", content, "image/tiff")},
+        data={"band_names": "blue,green,red,SCL_20m", "sensor": "Sentinel-2"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    dataset_id = uploaded.json()["id"]
+    labels = [
+        point_label(col * 8 + 4, row * 8 + 4, "water" if col < 4 else "vegetation", dataset_id=dataset_id)
+        for row in range(8)
+        for col in range(8)
+    ]
+    assert client.post(f"{root}/labels", json={"labels": labels}).status_code == 201
+
+    trained = client.post(f"{root}/train", json={"params": {"n_estimators": 10}})
+    assert trained.status_code == 201, trained.text
+    checkpoint = joblib.load(trained.json()["checkpoint"])
+    assert checkpoint["bands"] == 4
+    assert checkpoint["predictor_band_indices"] == [0, 1, 2]
+    assert checkpoint["predictor_band_names"] == ["blue", "green", "red"]
+    assert checkpoint["excluded_band_indices"] == [3]
+    assert checkpoint["excluded_band_names"] == ["SCL_20m"]
+    assert checkpoint["n_features"] == 12
+
+    prediction = client.post(f"{root}/predict", json={"dataset_id": dataset_id})
+    assert prediction.status_code == 200, prediction.text
+    assert prediction.json()["predictor_band_indices"] == [0, 1, 2]
+    assert prediction.json()["excluded_band_names"] == ["SCL_20m"]
+    map_field = client.get(f"{root}/predict/map?dataset_id={dataset_id}&layer=hard")
+    assert map_field.status_code == 200, map_field.text
+    assert map_field.json()["predictor_band_indices"] == [0, 1, 2]
+    query = client.post(
+        f"{root}/query",
+        json={
+            "dataset_id": dataset_id,
+            "strategy": "uncertainty",
+            "batch_size": 2,
+            "exclude_labeled": False,
+        },
+    )
+    assert query.status_code == 200, query.text
+    batch = client.get(f"{root}/queries/{query.json()['batch_id']}").json()
+    assert batch["parameters"]["predictor_band_indices"] == [0, 1, 2]
+
+    som = client.get(f"{root}/som?dataset_id={dataset_id}&rows=4&cols=4&epochs=10")
+    assert som.status_code == 200, som.text
+    assert som.json()["bands"] == 3
+    assert som.json()["predictor_band_indices"] == [0, 1, 2]
+    assert som.json()["excluded_band_names"] == ["SCL_20m"]
+    assert len(som.json()["cells"][0]["band_means"]) == 3
+    unsupervised_som = client.post(
+        f"{root}/som/classify",
+        json={"dataset_id": dataset_id, "rows": 2, "cols": 2, "epochs": 5, "max_train_samples": 64},
+    )
+    assert unsupervised_som.status_code == 200, unsupervised_som.text
+    assert unsupervised_som.json()["predictor_band_indices"] == [0, 1, 2]
+
+    scene = client.post(
+        f"{root}/scenes",
+        files={"file": ("scl-scene.tif", content, "image/tiff")},
+        data={"sensor": "Sentinel-2", "acquisition_datetime": "2025-01-02T00:00:00Z"},
+    )
+    assert scene.status_code == 201, scene.text
+    classified = client.post(f"{root}/scenes/{scene.json()['id']}/classify", json={})
+    assert classified.status_code == 201, classified.text
+    contract = classified.json()["analysis"]["contract"]
+    assert contract["predictor_band_indices"] == [0, 1, 2]
+    assert contract["excluded_band_names"] == ["SCL_20m"]
+
+
 def test_pixel_lightgbm_training_predicts_source_grid(client, project, dataset):
     labels = [point_label(col * 8 + 4, row * 8 + 4, "water" if col < 4 else "vegetation")
               for row in range(2) for col in range(8)]

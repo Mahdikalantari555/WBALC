@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete as sa_delete, select
 
 from ..config import Settings
-from ..models import Dataset, Export, Label
+from ..models import Dataset, Export, Label, Scene
 from ..schemas import DatasetOut
 from ..services.raster_service import (
     RasterError,
@@ -240,6 +240,17 @@ async def delete_dataset(project_id: int, dataset_id: int, session: SessionDep) 
         Path(export.path).unlink(missing_ok=True)
     await session.execute(sa_delete(Export).where(Export.dataset_id == dataset_id))
     await session.execute(sa_delete(Label).where(Label.dataset_id == dataset_id))
-    Path(dataset.path).unlink(missing_ok=True)
+    source_path = Path(dataset.path)
     await session.delete(dataset)
     await session.commit()
+
+    # Scene-backed active-learning datasets share their immutable source file.
+    # Remove bytes only after the last Scene/Dataset reference is gone.
+    dataset_reference = await session.execute(
+        select(Dataset.id).where(Dataset.path == str(source_path)).limit(1)
+    )
+    scene_reference = await session.execute(
+        select(Scene.id).where(Scene.storage_path == str(source_path)).limit(1)
+    )
+    if dataset_reference.scalar_one_or_none() is None and scene_reference.scalar_one_or_none() is None:
+        source_path.unlink(missing_ok=True)

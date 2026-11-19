@@ -128,6 +128,7 @@ async def _run_inference(
         )
 
     resolution = checkpoint.get("resolution", "patch")
+    predictor_band_indices = checkpoint.get("predictor_band_indices", list(range(dataset.bands)))
     patch_size, stride = (
         (1, 1) if resolution == "pixel" else (checkpoint["patch_size"], checkpoint["stride"])
     )
@@ -143,7 +144,7 @@ async def _run_inference(
             with rasterio.open(dataset.path) as src:
                 # Bounded before allocating: one float32 value per class per pixel.
                 check_element_budget(
-                    src.count,
+                    len(predictor_band_indices),
                     src.height,
                     src.width,
                     settings.max_raster_elements,
@@ -157,7 +158,12 @@ async def _run_inference(
                     for x0 in range(0, w, 256):
                         bh, bw = min(256, h - y0), min(256, w - x0)
                         window = rasterio.windows.Window(region.x0 + x0, region.y0 + y0, bw, bh)
-                        block = src.read(window=window, masked=True, out_dtype="float32").filled(np.nan)
+                        block = src.read(
+                            indexes=[index + 1 for index in predictor_band_indices],
+                            window=window,
+                            masked=True,
+                            out_dtype="float32",
+                        ).filled(np.nan)
                         X_block, valid_block = pixel_features(block)
                         raw_block = np.asarray(model.predict_proba(X_block))
                         model_classes = [run.classes[int(c)] for c in model.classes_]
@@ -167,7 +173,12 @@ async def _run_inference(
                 valid = valid.reshape(-1)
                 probs = np.moveaxis(probability_cube, 0, -1).reshape(h * w, k)
         else:
-            arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+            arr = load_raster(
+                dataset.path,
+                dataset.nodata,
+                settings.max_raster_elements,
+                band_indexes=predictor_band_indices,
+            )
             crop = arr[:, region.y0 : region.y1, region.x0 : region.x1]
             grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
             X = patch_features(crop, grid)
@@ -221,6 +232,10 @@ async def _run_inference(
         "band_schema_verified": contract["verified"],
         "band_schema_reason": contract["reason"],
         "schema_override": contract["override"],
+        "predictor_band_indices": contract["predictor_band_indices"],
+        "predictor_band_names": contract["predictor_band_names"],
+        "excluded_band_indices": contract["excluded_band_indices"],
+        "excluded_band_names": contract["excluded_band_names"],
     }
 
     meta = grid_metadata(
@@ -319,6 +334,10 @@ async def _run_inference(
                 **plan,
                 "training_run_id": run.id,
                 "taxonomy_version": taxonomy.get("version"),
+                "predictor_band_indices": contract["predictor_band_indices"],
+                "predictor_band_names": contract["predictor_band_names"],
+                "excluded_band_indices": contract["excluded_band_indices"],
+                "excluded_band_names": contract["excluded_band_names"],
             }
             binary_path = export_dir / f"binary_{tag}.tif"
             binary_probability_path = export_dir / f"binary_probability_{tag}.tif"
@@ -467,6 +486,10 @@ async def predict(
         band_schema_verified=contract["band_schema_verified"],
         band_schema_reason=contract["band_schema_reason"],
         schema_override=contract["schema_override"],
+        predictor_band_indices=contract["predictor_band_indices"],
+        predictor_band_names=contract["predictor_band_names"],
+        excluded_band_indices=contract["excluded_band_indices"],
+        excluded_band_names=contract["excluded_band_names"],
         study_area_applied=mask["applied"],
         study_area_note=mask["note"],
         # `persist=True` writes the derived binary product only when the run's
@@ -589,6 +612,10 @@ async def predict_map(
         stale=bool(latest is not None and latest.id != run.id),
         band_schema_verified=contract["band_schema_verified"],
         band_schema_reason=contract["band_schema_reason"],
+        predictor_band_indices=contract["predictor_band_indices"],
+        predictor_band_names=contract["predictor_band_names"],
+        excluded_band_indices=contract["excluded_band_indices"],
+        excluded_band_names=contract["excluded_band_names"],
         study_area_applied=mask["applied"],
         study_area_note=mask["note"],
         binary=_binary_summary(run, project, dataset.id, binary_available=binary_available),

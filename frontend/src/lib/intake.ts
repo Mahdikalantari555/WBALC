@@ -30,6 +30,11 @@ export type Job = {
   error?: string;
 };
 
+/** One explicit confirmation can safely cover only identical ordered schemas. */
+export function bandSchemaKey(sensor: Sensor, names: string[]): string {
+  return JSON.stringify([sensor, names.map(name => name.trim().toLowerCase())]);
+}
+
 const radarOrder = ['vv', 'vh', 'hh', 'hv'];
 const opticalOrder = [
   'coastal', 'blue', 'green', 'red', 'rededge1', 'rededge2', 'rededge3',

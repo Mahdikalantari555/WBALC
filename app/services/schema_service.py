@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 SCHEMA_VERSION = "band-schema-v1"
@@ -80,6 +81,56 @@ def schema_digest(schema: dict[str, Any] | None) -> str | None:
 
 class SchemaConflict(ValueError):
     """Two inputs cannot be proven to describe the same ordered bands."""
+
+
+def is_scl_band(name: str) -> bool:
+    """Whether a declared band name identifies Sentinel-2 scene classification.
+
+    SCL is categorical QA data, not a spectral predictor. Filename-derived
+    aliases are canonicalised by intake, but uploaded rasters may retain the
+    product's native ``SCL_20m``/``SCL_60m`` descriptions.
+    """
+    compact = re.sub(r"[^a-z0-9]", "", name.casefold())
+    if compact.startswith("s2"):
+        compact = compact[2:]
+    return compact in {
+        "scl", "scl10m", "scl20m", "scl60m", "scl10", "scl20", "scl60",
+        "sceneclassification", "sceneclassificationlayer", "sceneclassificationmap",
+    }
+
+
+def classification_band_selection(schema: dict[str, Any] | None, band_count: int) -> dict[str, list]:
+    """Select model predictors while retaining QA bands in the source raster.
+
+    Only a fully declared schema can identify SCL. An undeclared schema keeps
+    all positions (the caller already records/requires an explicit override for
+    model use); it never guesses from a sensor label or filename.
+    """
+    names = (
+        schema.get("band_names")
+        if isinstance(schema, dict) and schema.get("declared") is True
+        else None
+    )
+    if not isinstance(names, list) or len(names) != band_count or not all(
+        isinstance(name, str) and name.strip() for name in names
+    ):
+        return {
+            "indices": list(range(band_count)),
+            "names": [],
+            "excluded_indices": [],
+            "excluded_names": [],
+        }
+
+    excluded = [index for index, name in enumerate(names) if is_scl_band(name)]
+    indices = [index for index in range(band_count) if index not in set(excluded)]
+    if not indices:
+        raise SchemaConflict("The raster contains only SCL/QA bands; no classification predictor bands remain")
+    return {
+        "indices": indices,
+        "names": [names[index] for index in indices],
+        "excluded_indices": excluded,
+        "excluded_names": [names[index] for index in excluded],
+    }
 
 
 def compare_schemas(

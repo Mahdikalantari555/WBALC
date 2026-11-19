@@ -636,6 +636,155 @@ def test_fusion_alignment_is_explicit_and_recorded(client, trained):
     assert body["alignment"]["aligned_sources"] == [a2]
 
 
+def test_weighted_vote_require_all_marks_a_pixel_nodata_when_one_source_is_missing(
+    client, trained, monkeypatch
+):
+    from app.api import temporal as temporal_api
+
+    pid = trained["id"]
+    s1 = register_scene(client, pid, seed=1, sensor="Sentinel-1", acquired="2024-01-01T00:00:00Z")
+    s2 = register_scene(client, pid, seed=2, sensor="Sentinel-2", acquired="2024-01-02T00:00:00Z")
+    a1 = classify(client, pid, s1).json()["analysis"]["id"]
+    a2 = classify(client, pid, s2).json()["analysis"]["id"]
+
+    grid = {
+        "crs": "EPSG:32631",
+        "transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4649776.0],
+        "width": 32,
+        "height": 32,
+    }
+    probabilities = {}
+    for analysis_id, class_index in ((a1, 0), (a2, 1)):
+        probabilities[analysis_id] = np.zeros((len(WATER), 32, 32), dtype=np.float32)
+        probabilities[analysis_id][class_index] = 1.0
+    validities = {analysis_id: np.ones((32, 32), dtype=bool) for analysis_id in (a1, a2)}
+    validities[a2][0, 0] = False
+    monkeypatch.setattr(
+        temporal_api,
+        "_load_probability",
+        lambda analysis: (probabilities[analysis.id], validities[analysis.id], grid),
+    )
+
+    response = client.post(
+        f"/projects/{pid}/fusion",
+        json={
+            "rule": "weighted_vote",
+            "target_scene_id": s1,
+            "analysis_ids": [a1, a2],
+            "missing_policy": "require_all",
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["agreement"]["fused_valid_pixels"] == 32 * 32 - 1
+    with rasterio.open(body["artifacts"]["hard"]["path"]) as fused:
+        hard = fused.read(1)
+        assert hard[0, 0] == fused.nodata
+        assert hard[0, 1] != fused.nodata
+
+
+def test_weighted_vote_does_not_emit_a_pixel_supported_only_by_a_zero_weight_source(
+    client, trained, monkeypatch
+):
+    from app.api import temporal as temporal_api
+
+    pid = trained["id"]
+    s1 = register_scene(client, pid, seed=1, sensor="Sentinel-1", acquired="2024-01-01T00:00:00Z")
+    s2 = register_scene(client, pid, seed=2, sensor="Sentinel-2", acquired="2024-01-02T00:00:00Z")
+    a1 = classify(client, pid, s1).json()["analysis"]["id"]
+    a2 = classify(client, pid, s2).json()["analysis"]["id"]
+
+    grid = {
+        "crs": "EPSG:32631",
+        "transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4649776.0],
+        "width": 32,
+        "height": 32,
+    }
+    probabilities = {}
+    for analysis_id, class_index in ((a1, 0), (a2, 1)):
+        probabilities[analysis_id] = np.zeros((len(WATER), 32, 32), dtype=np.float32)
+        probabilities[analysis_id][class_index] = 1.0
+    validities = {analysis_id: np.ones((32, 32), dtype=bool) for analysis_id in (a1, a2)}
+    validities[a1][0, 0] = False
+    monkeypatch.setattr(
+        temporal_api,
+        "_load_probability",
+        lambda analysis: (probabilities[analysis.id], validities[analysis.id], grid),
+    )
+
+    response = client.post(
+        f"/projects/{pid}/fusion",
+        json={
+            "rule": "weighted_vote",
+            "target_scene_id": s1,
+            "analysis_ids": [a1, a2],
+            "weights": {"Sentinel-1": 1.0, "Sentinel-2": 0.0},
+            "missing_policy": "renormalise",
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["agreement"]["sources"] == 1
+    assert body["agreement"]["fused_valid_pixels"] == 32 * 32 - 1
+    assert body["agreement"]["per_source"][1]["participates"] is False
+    with rasterio.open(body["artifacts"]["hard"]["path"]) as fused:
+        hard = fused.read(1)
+        assert hard[0, 0] == fused.nodata
+        assert hard[0, 1] == 0
+
+
+def test_fusion_alignment_preserves_probability_nodata_pixels(client, trained, monkeypatch):
+    from app.api import temporal as temporal_api
+
+    pid = trained["id"]
+    s1 = register_scene(client, pid, seed=1, sensor="Sentinel-1", acquired="2024-01-01T00:00:00Z")
+    s2 = register_scene(client, pid, seed=2, sensor="Sentinel-2", acquired="2024-01-02T00:00:00Z")
+    a1 = classify(client, pid, s1).json()["analysis"]["id"]
+    a2 = classify(client, pid, s2).json()["analysis"]["id"]
+
+    target_grid = {
+        "crs": "EPSG:32631",
+        "transform": [10.0, 0.0, 500000.0, 0.0, -10.0, 4649776.0],
+        "width": 32,
+        "height": 32,
+    }
+    shifted_grid = {
+        **target_grid,
+        "transform": [10.0, 0.0, 500010.0, 0.0, -10.0, 4649776.0],
+    }
+    probability_a = np.zeros((len(WATER), 32, 32), dtype=np.float32)
+    probability_a[0] = 1.0
+    probability_b = np.zeros((len(WATER), 32, 32), dtype=np.float32)
+    probability_b[1] = 1.0
+    probability_b[:, 0, 0] = -9999.0  # Probability-artifact nodata sentinel.
+    valid_a = np.ones((32, 32), dtype=bool)
+    valid_b = np.ones((32, 32), dtype=bool)
+    valid_b[0, 0] = False
+    products = {
+        a1: (probability_a, valid_a, target_grid),
+        a2: (probability_b, valid_b, shifted_grid),
+    }
+    monkeypatch.setattr(temporal_api, "_load_probability", lambda analysis: products[analysis.id])
+
+    response = client.post(
+        f"/projects/{pid}/fusion",
+        json={
+            "rule": "weighted_probability",
+            "target_scene_id": s1,
+            "analysis_ids": [a1, a2],
+            "missing_policy": "require_all",
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["agreement"]["fused_valid_pixels"] == 32 * 31 - 1
+    with rasterio.open(body["artifacts"]["hard"]["path"]) as fused:
+        hard = fused.read(1)
+        assert hard[0, 0] == fused.nodata
+        assert hard[0, 1] == fused.nodata
+        assert hard[0, 2] != fused.nodata
+
+
 def test_fusion_priority_rule_prefers_the_first_valid_source(client, trained):
     pid = trained["id"]
     s1 = register_scene(client, pid, seed=1, sensor="Sentinel-1", acquired="2024-01-01T00:00:00Z")
