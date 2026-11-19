@@ -3,7 +3,7 @@
   import { tick } from 'svelte';
   import { mappingKey, readDraft, writeDraft } from '$lib/drafts';
   import { api } from '$lib/client/api';
-  import { planFolder, inferBand, validNames, type Job } from '$lib/intake';
+  import { planFolder, planManual, inferBand, validNames, type Job } from '$lib/intake';
   import { getWorkspace } from '$lib/state.svelte';
   import { useT } from '$lib/t.svelte';
   let { projectId }: { projectId: string } = $props();
@@ -32,7 +32,7 @@
   function needsReview(job: Job) { return !states[job.key]?.id && (!reviewed[job.key] || !!job.error || !!states[job.key]?.error || !validNames(job.names) || (target === 'scene' && !job.date)); }
   const problems = {
     dateInvalid: 'batch.dateInvalid', dateConflict: 'batch.dateConflict', metadataInvalid: 'batch.metadataInvalid',
-    metadataConflict: 'batch.metadataConflict', mixedSensor: 'batch.mixedSensor',
+    metadataTooLarge: 'batch.metadataTooLarge', metadataConflict: 'batch.metadataConflict', mixedSensor: 'batch.mixedSensor',
   } as const;
   async function stage(event: Event, kind: 'folder' | 'manual') {
     const input = event.currentTarget as HTMLInputElement;
@@ -46,8 +46,7 @@
         jobs = await planFolder(selected);
       } else {
         target = 'dataset';
-        jobs = [{ key: 'manual', date: '', platform: '', files: selected, names: selected.map(f => inferBand(f.name)),
-          sensor: selected.some(f => /^(vv|vh|hh|hv)$/.test(inferBand(f.name))) ? 'Sentinel-1' : 'Sentinel-2' }];
+        jobs = await planManual(selected);
       }
       if (!jobs.length) error = t('batch.empty');
       else {
@@ -73,6 +72,26 @@
         fields.set('kind', destination);
         if (job.date) fields.set('acquisition_datetime', job.date.length === 10 ? `${job.date}T00:00:00Z` : job.date);
         if (job.platform) fields.set('platform', job.platform);
+        if (destination === 'scene' && job.metadata) {
+          const metadata = job.metadata;
+          const set = (key: string, value: string | number | null | undefined) => {
+            if (value !== null && value !== undefined && value !== '') fields.set(key, String(value));
+          };
+          set('product_type', metadata.productType);
+          set('product_level', metadata.productLevel);
+          set('processing_baseline', metadata.processingBaseline);
+          set('orbit_direction', metadata.orbitDirection);
+          set('relative_orbit', metadata.relativeOrbit);
+          if (job.sensor === 'Sentinel-1') {
+            set('polarization', metadata.polarization.length ? metadata.polarization.join(',') : null);
+            set('acquisition_mode', metadata.acquisitionMode);
+          }
+          if (job.sensor === 'Sentinel-2' && metadata.nativeBandResolutions) {
+            fields.set('native_band_resolutions', JSON.stringify(metadata.nativeBandResolutions));
+          }
+          if (metadata.acquisitionMetadata) fields.set('acquisition_metadata', JSON.stringify(metadata.acquisitionMetadata));
+          if (metadata.productMetadata) fields.set('product_metadata', JSON.stringify(metadata.productMetadata));
+        }
         try { const result = await api.uploadStack(projectId, fields); states[job.key] = { id: result.id }; last = result.id; writeDraft(draftKey(job), null); drafts[job.key] = null; }
         catch (failure) { states[job.key] = { error: failure instanceof Error ? failure.message : String(failure) }; }
       }
@@ -88,7 +107,7 @@
   <div><h2 id="batch-heading"><Layers size={18} />{t('batch.title')}</h2><p>{t('batch.hint')}</p></div>
   <div class="batch-actions">
     <label class="button chooser"><FolderOpen size={15} />{t('batch.folder')}<input type="file" aria-label={t('batch.folder')} webkitdirectory multiple onchange={(e) => stage(e, 'folder')} disabled={staging || busy} /></label>
-    <label class="button chooser"><Upload size={15} />{t('batch.single')}<input type="file" aria-label={t('batch.single')} accept=".tif,.tiff" multiple onchange={(e) => stage(e, 'manual')} disabled={staging || busy} /></label>
+    <label class="button chooser"><Upload size={15} />{t('batch.single')}<input type="file" aria-label={t('batch.single')} accept=".tif,.tiff,.json,application/json,image/tiff" multiple onchange={(e) => stage(e, 'manual')} disabled={staging || busy} /></label>
     {#if jobs.length}<button class="button quiet" onclick={() => modal.showModal()}>{t('batch.review')}</button>{/if}
   </div>
   {#if staging}<p role="status">{t('batch.scanning')}</p>{/if}
@@ -98,7 +117,7 @@
 <dialog bind:this={modal} aria-labelledby="batch-review" oncancel={(e) => { if (busy) e.preventDefault(); }}>
   <header><h2 id="batch-review">{t('batch.review')}</h2><p>{t('batch.reviewHint')}</p></header>
   <label class="field">{t('intake.kind')}
-    <select class="select" bind:value={target} disabled={busy || Object.values(states).some(state => state.id)}>
+    <select class="select" bind:value={target} onchange={() => { reviewed = {}; }} disabled={busy || Object.values(states).some(state => state.id)}>
       <option value="scene">{t('intake.scene')}</option><option value="dataset">{t('intake.dataset')}</option>
     </select>
   </label>
@@ -109,11 +128,24 @@
         <summary><bdi>{job.date.slice(0, 10) || (mode === 'manual' ? t('batch.single') : job.key || t('batch.unknown'))}</bdi> · {job.sensor} · {job.files.length} GeoTIFF {states[job.key]?.id ? `· ${t('batch.done')}` : reviewed[job.key] ? `· ${t('ux.reviewed')}` : `· ${t('ux.unreviewed')}`}</summary>
         <fieldset disabled={busy || Boolean(states[job.key]?.id)}>
           <label class="field">{t('intake.sensor')}
-            <select class="select" bind:value={job.sensor}><option value="Sentinel-2">Sentinel-2</option><option value="Sentinel-1">Sentinel-1</option></select>
+            <select class="select" bind:value={job.sensor} onchange={() => { reviewed[job.key] = false; }}><option value="Sentinel-2">Sentinel-2</option><option value="Sentinel-1">Sentinel-1</option></select>
           </label>
-          {#if mode === 'manual' && target === 'scene'}
-            <label class="field">{t('intake.date')}<input class="input" type="date" bind:value={job.date} /></label>
+          {#if target === 'scene'}
+            <label class="field">{t('intake.date')}<input class="input" type="date" value={job.date.slice(0, 10)} onchange={(event) => {
+              const day = event.currentTarget.value;
+              const time = job.date.length > 10 ? job.date.slice(10) : 'T00:00:00Z';
+              job.date = day ? `${day}${time}` : '';
+              if (job.error === 'dateInvalid' || job.error === 'dateConflict') delete job.error;
+              reviewed[job.key] = false;
+            }} /></label>
           {/if}
+          {#if target === 'scene'}
+            <label class="field">{t('intake.platform')}<input class="input" maxlength="100" bind:value={job.platform} oninput={() => { reviewed[job.key] = false; }} /></label>
+          {/if}
+          {#if job.metadata?.metadataFileCount}
+            <p class="metadata-read">{t('batch.metadataRead', { count: job.metadata.metadataFileCount })}</p>
+          {/if}
+          {#if job.ignoredMerged}<p class="metadata-read">{t('batch.mergedSkipped', { count: job.ignoredMerged })}</p>{/if}
           {#if drafts[job.key]}<button class="button" onclick={() => { job.names = [...(drafts[job.key] ?? job.names)]; save(job); }}>{t('ux.restore')}</button>{/if}
           {#each job.files as file, index}
             <label class="band-row"><span><bdi>{file.name}</bdi>{#if inferBand(file.name)}<small class="suggestion">{t('ux.suggested', { name: inferBand(file.name) })}</small>{/if}</span><input class="input" aria-label={t('batch.bandName', { index: index + 1 })} dir="ltr" bind:value={job.names[index]} oninput={() => { void tick().then(() => save(job)); }} /></label>
@@ -159,4 +191,5 @@
   .band-row input { min-width: 0; width: 100%; }
   footer span { flex: 1 1 auto; }
   .problem { color: var(--danger-fg); }
+  .metadata-read { color: var(--muted); font-size: 11px; margin-block: 4px; }
 </style>

@@ -3,6 +3,7 @@
   import { onMount, tick } from 'svelte';
   import { mappingKey, readDraft, writeDraft } from '$lib/drafts';
   import { validNames } from '$lib/intake';
+  import { normalizeStudyArea } from '$lib/study-area';
   import { api } from '$lib/client/api';
   import BandIntake from '$lib/components/BandIntake.svelte';
   import ProjectClasses from '$lib/components/ProjectClasses.svelte';
@@ -44,20 +45,15 @@
     creating = true;
     try {
       const source = fields.get('study_area');
-      let geometry: Record<string, unknown> | undefined;
+      let studyArea: ReturnType<typeof normalizeStudyArea> | null = null;
       if (source instanceof File && source.name) {
-        let parsed;
-        try { parsed = JSON.parse(await source.text()); }
+        try { studyArea = normalizeStudyArea(JSON.parse(await source.text())); }
         catch { throw new Error(t('intake.areaInvalid')); }
-        geometry = parsed?.type === 'Feature' ? parsed.geometry : parsed;
-        if (!geometry || !['Polygon', 'MultiPolygon'].includes(String(geometry.type))) {
-          throw new Error(t('intake.areaInvalid'));
-        }
       }
       const created = await api.createProject({
         name, description: String(fields.get('description')).trim(),
         classes, generic_classes: true,
-        ...(geometry ? { study_area_geometry: geometry, study_area_crs: 'EPSG:4326' } : {}),
+        ...(studyArea ? { study_area_geometry: studyArea.geometry, study_area_crs: studyArea.crs } : {}),
       });
       form.reset();
       await tick();

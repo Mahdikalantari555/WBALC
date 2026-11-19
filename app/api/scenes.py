@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Literal
 
 import anyio
-from fastapi import APIRouter, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
 from ..models import Scene
 from ..schemas import SceneOut, SceneSpatialOut
 from ..services.raster_service import RasterError, extract_scene_metadata
+from ..services.raster_preview import PreviewError, inspect_raster_pixel, render_raster_preview
 from ..storage import project_dir, unique_name
 from .deps import SessionDep, SettingsDep, get_project
 
@@ -137,8 +138,10 @@ async def register_scene(
             raise HTTPException(status_code=422, detail="Polarization must contain VV, VH, HH, and/or HV")
     if sensor == "Sentinel-2" and polarizations:
         raise HTTPException(status_code=422, detail="Polarization is Sentinel-1 metadata")
-    if sensor == "Sentinel-2" and (acquisition_mode or orbit_direction or relative_orbit is not None):
-        raise HTTPException(status_code=422, detail="Acquisition mode and orbit fields are Sentinel-1 metadata")
+    if sensor == "Sentinel-2" and acquisition_mode:
+        raise HTTPException(status_code=422, detail="Acquisition mode is Sentinel-1 metadata")
+    # STAC sat:orbit_state and sat:relative_orbit are defined for both
+    # Sentinel constellations, so orbit direction/number are valid S2 metadata.
     if sensor == "Sentinel-1" and native_resolution:
         raise HTTPException(status_code=422, detail="Native spectral band resolutions are Sentinel-2 metadata")
 
@@ -248,6 +251,60 @@ async def scene_file(project_id: int, scene_id: int, session: SessionDep) -> Fil
     if scene is None or scene.project_id != project_id or not Path(scene.storage_path).is_file():
         raise HTTPException(404, "Scene file not found in this project")
     return FileResponse(scene.storage_path, media_type="image/tiff", filename=scene.source_filename)
+
+
+@router.get("/{scene_id}/preview")
+async def preview_scene_file(
+    project_id: int,
+    scene_id: int,
+    session: SessionDep,
+    mode: str = "true-color",
+    size: int = Query(default=1400, ge=16, le=2048),
+    x0: int | None = Query(default=None, ge=0),
+    y0: int | None = Query(default=None, ge=0),
+    x1: int | None = Query(default=None, ge=1),
+    y1: int | None = Query(default=None, ge=1),
+    upscale: bool = False,
+) -> Response:
+    """GDAL preview fallback for TIFF variants not decoded by geotiff.js."""
+    await get_project(session, project_id)
+    scene = await session.get(Scene, scene_id)
+    if scene is None or scene.project_id != project_id or not Path(scene.storage_path).is_file():
+        raise HTTPException(404, "Scene file not found in this project")
+    coordinates = (x0, y0, x1, y1)
+    if any(value is not None for value in coordinates) and not all(value is not None for value in coordinates):
+        raise HTTPException(status_code=422, detail="A preview window must provide x0, y0, x1, and y1")
+    window = tuple(coordinates) if all(value is not None for value in coordinates) else None
+    names = scene.band_names
+    try:
+        png = await anyio.to_thread.run_sync(
+            lambda: render_raster_preview(scene.storage_path, mode=mode, size=size, names=names, window=window, upscale=upscale)
+        )
+    except PreviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=60"})
+
+
+@router.get("/{scene_id}/pixel")
+async def inspect_scene_pixel(
+    project_id: int,
+    scene_id: int,
+    session: SessionDep,
+    x: int = Query(ge=0),
+    y: int = Query(ge=0),
+    mode: str = "true-color",
+) -> dict:
+    """GDAL pixel-probe fallback for TIFFs the browser decoder cannot inspect."""
+    await get_project(session, project_id)
+    scene = await session.get(Scene, scene_id)
+    if scene is None or scene.project_id != project_id or not Path(scene.storage_path).is_file():
+        raise HTTPException(404, "Scene file not found in this project")
+    try:
+        return await anyio.to_thread.run_sync(
+            lambda: inspect_raster_pixel(scene.storage_path, x=x, y=y, mode=mode, names=scene.band_names)
+        )
+    except PreviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/{scene_id}/spatial", response_model=SceneSpatialOut)
