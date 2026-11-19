@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_, update
+from sqlalchemy.orm import aliased
 
 from ..models import Label, QueryBatch, QueryItem, utcnow
-from ..schemas import LabelBatchCreate, LabelCreate, LabelOut
+from ..schemas import LabelBatchCreate, LabelCreate, LabelOut, LabelUndoOut
 from ..services.label_service import derive_sample_id, latest_labels
 from ..services.pipeline import run_training
 from ..services.schema_service import SchemaConflict
@@ -276,6 +277,50 @@ async def label_history(project_id: int, session: SessionDep) -> list[Label]:
     await get_project(session, project_id)
     labels = await project_labels(session, project_id)
     return [_label_out(label) for label in labels]
+
+
+@router.post("/labels/{label_id}/undo", response_model=LabelUndoOut)
+async def undo_label(project_id: int, label_id: int, session: SessionDep) -> LabelUndoOut:
+    """Withdraw an exact version, only while it is still current."""
+    await get_project(session, project_id)
+    label = await session.get(Label, label_id)
+    if label is None or label.project_id != project_id:
+        raise HTTPException(404, "Label not found in this project")
+    versions = list((await session.scalars(select(Label).where(
+        Label.project_id == project_id, Label.sample_id == label.sample_id,
+    ))).all())
+    current = latest_labels(versions)
+    if not current or current[0].id != label_id:
+        raise HTTPException(409, "This label is no longer the current version")
+    now = utcnow()
+    newer = aliased(Label)
+    has_newer = select(newer.id).where(
+        newer.project_id == project_id, newer.sample_id == label.sample_id,
+        newer.undone_at.is_(None),
+        tuple_(newer.iteration, newer.version, newer.id) > (label.iteration, label.version, label.id),
+    ).exists()
+    changed = await session.execute(update(Label).where(
+        Label.id == label_id, Label.undone_at.is_(None), ~has_newer,
+    ).values(undone_at=now).execution_options(synchronize_session=False))
+    if changed.rowcount != 1:
+        raise HTTPException(409, "This label is no longer the current version")
+    items = (await session.scalars(select(QueryItem).join(QueryBatch, QueryBatch.id == QueryItem.batch_id).where(
+        QueryBatch.project_id == project_id, QueryItem.label_id == label_id,
+    ))).all()
+    restored_query_class = None
+    for item in items:
+        previous = latest_labels([v for v in versions if v.id != label_id and v.query_item_id == item.id])
+        restored = previous[0] if previous else None
+        if item.id == label.query_item_id and restored:
+            restored_query_class = restored.class_name
+        item.label_id = restored.id if restored else None
+        item.decided_class = restored.class_name if restored else None
+        item.status = "labeled" if restored else "pending"
+        item.decided_at = now if restored else None
+        item.decision_note = None
+    await session.commit()
+    active = latest_labels([v for v in versions if v.id != label_id])
+    return LabelUndoOut(restored_class=active[0].class_name if active else None, restored_query_class=restored_query_class)
 
 
 @router.delete("/labels/{sample_id}", status_code=204)

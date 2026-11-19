@@ -1,10 +1,7 @@
 node_modules
-.next
-out
+.svelte-kit
+build
+coverage
 .env
 .env.*
 !.env.example
-*.tsbuildinfo
-npm-debug.log*
-Dockerfile
-.dockerignore

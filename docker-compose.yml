@@ -1,5 +1,4 @@
-# Full WBALC stack: engine + Next.js UI + optional SvelteKit research workspace
-# + optional Postgres.
+# Full WBALC stack: engine + SvelteKit research workspace + optional Postgres.
 #
 #   ./scripts/dev.sh up            # everything that can run by default
 #   ./scripts/dev.sh up --postgres # ... with Postgres instead of SQLite
@@ -8,7 +7,6 @@
 #   ./scripts/dev.sh down -v       # stop and delete the data volumes
 #
 # Profiles exist because the default stack must stay one command:
-#   research  the bilingual SvelteKit research workspace (port 5173)
 #   postgres  Postgres 16 instead of the SQLite file in the API volume
 #
 # The API image already declares a HEALTHCHECK; the UI services depend on it
@@ -55,28 +53,13 @@ services:
         NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
     image: wbalc/frontend:local
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
-    environment:
-      RSAL_API_URL: http://api:8000
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # Optional bilingual SvelteKit research workspace.
-  research-workspace:
-    build:
-      context: ./examples/wbalc-geospatial-research-interface
-      args:
-        NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
-    image: wbalc/research-workspace:local
-    profiles: ["research"]
-    ports:
-      - "${RESEARCH_PORT:-5173}:5173"
+      - "${FRONTEND_PORT:-3000}:5173"
     environment:
       RSAL_API_URL: http://api:8000
       PORT: 5173
       HOST: 0.0.0.0
+      # Users behind a proxy can set the externally visible origin.
+      ORIGIN: "${ORIGIN:-http://localhost:${FRONTEND_PORT:-3000}}"
     depends_on:
       api:
         condition: service_healthy

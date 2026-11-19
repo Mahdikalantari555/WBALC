@@ -21,6 +21,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import select
 
+from ..services.label_service import latest_labels
+
 from ..models import (
     Dataset,
     EvaluationProtocol,
@@ -135,7 +137,7 @@ async def create_protocol(
         int(key): value for key, value in (payload.groups or {}).items() if key.isdigit()
     }
     samples = sample_records(
-        [label for label in labels], datasets, list(project.classes), group_map=group_map
+        latest_labels(labels), datasets, list(project.classes), group_map=group_map
     )
     try:
         split = split_for_project(
