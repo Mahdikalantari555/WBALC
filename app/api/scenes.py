@@ -52,6 +52,40 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _datetime_from_metadata(metadata: dict | None) -> datetime | None:
+    """Derive the acquisition time from a STAC-style or MTL-style metadata object.
+
+    Only consulted when the request did not carry `acquisition_datetime`. A
+    date-only value (common in STAC item summaries) is read as midnight UTC so
+    the registration still succeeds without silently inventing precision.
+    """
+    if not metadata:
+        return None
+    properties = metadata.get("properties") if isinstance(metadata.get("properties"), dict) else {}
+    mtl = metadata.get("METADATA") if isinstance(metadata.get("METADATA"), dict) else {}
+    product = mtl.get("PRODUCT_METADATA") if isinstance(mtl.get("PRODUCT_METADATA"), dict) else {}
+    # Precise STAC instants first; the truncated item-level summary and the
+    # MTL date-only field only back the others up.
+    candidates = [
+        properties.get("datetime"),
+        properties.get("start_datetime"),
+        metadata.get("datetime"),
+        product.get("ACQUISITION_DATE"),
+    ]
+    for value in candidates:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        text = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
+
+
 def _scene_out(scene: Scene, settings) -> SceneOut:
     values = {
         name: getattr(scene, name)
@@ -115,6 +149,8 @@ async def register_scene(
 
     acquired = _parse_datetime(acquisition_datetime)
     acquisition_json = _parse_json_object(acquisition_metadata, "acquisition_metadata")
+    if acquired is None:
+        acquired = _datetime_from_metadata(acquisition_json)
     product_json = _parse_json_object(product_metadata, "product_metadata")
     native_resolution = _parse_json_object(native_band_resolutions, "native_band_resolutions")
     if native_resolution is not None:
@@ -229,9 +265,14 @@ async def register_scene(
         if nodata_values and all(value == nodata_values[0] for value in nodata_values)
         else None
     )
+    # Scenes routinely upload every acquisition as "merged.tif"; without the
+    # acquisition context the dataset selector shows N indistinguishable rows.
+    dataset_display = filename
+    if acquired is not None:
+        dataset_display = f"{sensor} {acquired:%Y-%m-%d} · {filename}"
     active_learning_dataset = Dataset(
         project_id=project_id,
-        filename=filename,
+        filename=dataset_display,
         path=str(destination),
         crs=raster_metadata["crs"],
         transform=raster_metadata["transform"],

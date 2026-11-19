@@ -513,7 +513,11 @@
       <div class="research-status">
         <div>
           <span class="section-label">{t('research.status.software')}</span>
-          <p class="accent">{sciStatus.softwareValidation}</p>
+          <p class="accent">
+            {sciStatus.softwareValidation === 'verified by automated tests on synthetic data'
+              ? t('research.status.softwareVerified')
+              : sciStatus.softwareValidation}
+          </p>
         </div>
         <div>
           <span class="section-label">{t('research.status.scientific')}</span>

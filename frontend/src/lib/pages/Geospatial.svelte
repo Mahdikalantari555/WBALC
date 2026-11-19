@@ -165,6 +165,9 @@
       workspace.map.bandMode = 'true-color';
       workspace.map.layers.imagery = true;
       workspace.map.selected = null;
+      // Leaving a scene for the training raster: the field was dropped with the
+      // scene view, so refetch it — nothing else re-triggers on this change.
+      if (!workspace.mapScene && workspace.latestRun) void workspace.loadMapField();
     }}>
       {#if workspace.dataset}<option value="">{t('intake.dataset')} · {workspace.dataset.name}</option>{/if}
       {#each workspace.scenes as acquisition (acquisition.id)}

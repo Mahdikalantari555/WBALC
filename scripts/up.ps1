@@ -90,6 +90,22 @@ function Test-Health($url) {
     } catch { return $false }
 }
 
+# Windows allows a 0.0.0.0 listener and a 127.0.0.1 listener on the same port to
+# coexist; incoming connections are then routed unpredictably between them and a
+# research session can silently talk to the wrong application. Any second
+# listener is therefore fatal for the affected port.
+function Assert-SingleListener($port, $label) {
+    $conns = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+    $owners = @($conns | Select-Object -ExpandProperty OwningProcess -Unique | Where-Object { $_ -gt 0 })
+    if ($owners.Count -gt 1) {
+        $names = ($owners | ForEach-Object {
+            $p = Get-Process -Id $_ -ErrorAction SilentlyContinue
+            if ($p) { "$_ ($($p.ProcessName))" } else { "$_" }
+        }) -join ", "
+        Die "$label port :$port is shared by multiple listeners ($names). Requests could reach the wrong service. Stop the other program or pick another port (API_PORT / FRONTEND_PORT)."
+    }
+}
+
 function Wait-For($url, $limit, $label) {
     $deadline = (Get-Date).AddSeconds($limit)
     do {
@@ -143,6 +159,7 @@ function Cmd-Up {
         if (!(PidAlive $enginePidFile) -or (Get-Content -LiteralPath $EngineIdentity -Raw -ErrorAction SilentlyContinue) -ne "$((Get-Content $enginePidFile))|$ApiPort|$Python") {
             Die "Cannot verify that the engine on :$ApiPort uses geo. Stop it (use up.ps1 down if launcher-managed), then retry."
         }
+        Assert-SingleListener $ApiPort "engine"
         Ok "engine already answering on :$ApiPort (using geo)"
     } else {
         if (PidAlive $enginePidFile) { Die "A previous engine is still running. Run up.ps1 down before restarting." }
@@ -153,6 +170,7 @@ function Cmd-Up {
         if ((Start-Bg engine $Root "`"$Python`" -m uvicorn app.main:app --host 0.0.0.0 --port $ApiPort$reload") -ne 0 -or !(Wait-For $EngineHealth 45 "engine")) {
             Die "engine failed to start: see .run/logs/engine.log"
         }
+        Assert-SingleListener $ApiPort "engine"
         Set-Content -LiteralPath $EngineIdentity -Value "$((Get-Content $enginePidFile))|$ApiPort|$Python" -NoNewline -ErrorAction Stop
     }
 
@@ -180,6 +198,7 @@ function Cmd-Up {
             if ((Start-Bg frontend $FrontendDir $cmd) -ne 0 -or !(Wait-For $FrontendHealth 60 "SvelteKit workspace")) {
                 Die "workspace failed to start or reach the engine: see .run/logs/frontend.log"
             }
+            Assert-SingleListener $FrontendPort "frontend"
         }
     }
 

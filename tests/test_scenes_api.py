@@ -179,6 +179,43 @@ class TestSceneFoundation:
         again = [scene["source_filename"] for scene in client.get(f"/projects/{project['id']}/scenes").json()]
         assert set(names) == {"dup-a.tif", "dup-b.tif"} and names == again
 
+    def test_metadata_datetime_fallback_and_scene_dataset_naming(self, client, project):
+        """A STAC/MTL item carries the acquisition time; the API should read it
+        when the form field is absent, and the queryable dataset row must stay
+        distinguishable across acquisitions that share a filename."""
+        stac = json.dumps({
+            "item_id": "S2B_TEST",
+            "datetime": "2025-01-02",
+            "properties": {"datetime": "2025-01-02T07:42:29.024000Z", "sat:orbit_state": "descending"},
+        })
+        response = upload(
+            client, project["id"], geotiff(), sensor="Sentinel-2",
+            acquisition_metadata=stac, filename="merged.tif",
+        )
+        assert response.status_code == 201, response.text
+        scene = response.json()
+        assert scene["acquisition_datetime"] is not None
+        assert scene["acquisition_datetime"].startswith("2025-01-02T07:42:29")
+        # Date-only top-level value only: midnight UTC, never an error.
+        date_only = upload(
+            client, project["id"], geotiff(), sensor="Sentinel-2",
+            acquisition_metadata=json.dumps({"datetime": "2025-03-13"}), filename="merged.tif",
+        )
+        assert date_only.status_code == 201, date_only.text
+        assert date_only.json()["acquisition_datetime"] == "2025-03-13T00:00:00Z"
+        datasets = client.get(f"/projects/{project['id']}/dataset").json()
+        names = {d["filename"] for d in datasets}
+        assert "Sentinel-2 2025-01-02 · merged.tif" in names
+        assert "Sentinel-2 2025-03-13 · merged.tif" in names
+
+    def test_explicit_datetime_without_timezone_stays_strict(self, client, project):
+        response = upload(
+            client, project["id"], geotiff(), sensor="Sentinel-2",
+            acquisition_datetime="2025-01-02", filename="strict.tif",
+        )
+        assert response.status_code == 422
+        assert "timezone" in response.json()["detail"]
+
     def test_first_scene_supplies_a_cold_start_query_dataset(self, client, project):
         created = upload(
             client,
@@ -190,7 +227,10 @@ class TestSceneFoundation:
         )
         assert created.status_code == 201, created.text
         datasets = client.get(f"/projects/{project['id']}/dataset").json()
-        assert len(datasets) == 1 and datasets[0]["filename"] == "first-scene.tif"
+        assert len(datasets) == 1
+        # Scene-backed datasets carry the acquisition context so the selector
+        # can tell N "merged.tif" acquisitions apart.
+        assert datasets[0]["filename"] == "Sentinel-2 2025-01-02 · first-scene.tif"
         assert datasets[0]["band_schema"]["declared"] is True
 
         batch = client.post(

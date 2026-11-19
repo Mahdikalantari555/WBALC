@@ -162,7 +162,15 @@
 </script>
 
 <svelte:window
-  onhashchange={() => (workspace.view = viewFromHash(location.hash))}
+  onhashchange={() => {
+    const view = viewFromHash(location.hash);
+    if (workspace.view !== view) {
+      workspace.view = view;
+      // Mirror setView: the map needs its prediction field when opened via the
+      // browser history as well as through the sidebar links.
+      if (view === 'map' && workspace.latestRun && workspace.dataset) void workspace.loadMapField();
+    }
+  }}
   onkeydown={(event) => {
     if (event.key === 'Escape') {
       popover = null;

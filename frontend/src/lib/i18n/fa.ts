@@ -450,6 +450,7 @@ export const fa: Record<TranslationKey, string> = {
   'research.status.software': 'اعتبارسنجی نرم‌افزار',
   'research.status.scientific': 'اعتبار علمی',
   'research.status.notEstablished': 'احراز نشده',
+  'research.status.softwareVerified': 'تأییدشده با آزمون‌های خودکار روی داده‌های ترکیبی',
   'research.status.counts': '{protocols} پروتکل · {results} نتیجه · {references} مساحت مرجع · {reports} گزارش',
   'research.protocols': 'پروتکل‌های ارزیابی',
   'research.protocols.hint': 'پروتکل ثبت می‌کند کدام نمونه‌ها کنار گذاشته شدند، با چه گروه‌بندی و با کدام بذر.',

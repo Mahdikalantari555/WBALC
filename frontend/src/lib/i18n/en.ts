@@ -451,6 +451,7 @@ export const en = {
   'research.status.software': 'Software validation',
   'research.status.scientific': 'Scientific validity',
   'research.status.notEstablished': 'Not established',
+  'research.status.softwareVerified': 'Verified by automated tests on synthetic data',
   'research.status.counts': '{protocols} protocol(s) · {results} result(s) · {references} reference area(s) · {reports} report(s)',
   'research.protocols': 'Evaluation protocols',
   'research.protocols.hint': 'A protocol records which samples were held out, grouped how, and with which seed.',
