@@ -27,6 +27,8 @@ def latest_labels(labels: list[Label]) -> list[Label]:
     """Keep only the newest version of each sample_id."""
     best: dict[str, Label] = {}
     for lab in labels:
+        if getattr(lab, "undone_at", None) is not None:
+            continue
         cur = best.get(lab.sample_id)
         key = (lab.iteration, lab.version, lab.id)
         if cur is None or key > (cur.iteration, cur.version, cur.id):

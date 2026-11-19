@@ -7,10 +7,10 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 
 from fastapi import Query as QueryParam
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from ..models import QueryBatch, QueryItem, utcnow
+from ..models import Label, QueryBatch, QueryItem, utcnow
 from ..schemas import (
     QueryBatchOut,
     QueryBatchSummary,
@@ -35,7 +35,7 @@ from ..services.query_service import (
     select_random,
 )
 from ..services.label_service import build_training_targets
-from ..services.pipeline import checkpoint_or_409
+from ..services.pipeline import checkpoint_or_409, resolve_inference_contract
 from ..services.raster_service import (
     RasterError,
     load_raster,
@@ -74,17 +74,19 @@ async def query_batch(
     dataset = await require_dataset(session, project_id, payload.dataset_id)
 
     run = await latest_run(session, project_id)
-    checkpoint = checkpoint_or_409(run) if run is not None else None
+    needs_model = payload.strategy in ("uncertainty", "hybrid")
     notes: list[str] = []
-
-    if checkpoint is not None and checkpoint["bands"] != dataset.bands:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Model expects {checkpoint['bands']} bands but dataset {dataset.id} "
-                f"has {dataset.bands}; train on this dataset first"
-            ),
-        )
+    checkpoint = None
+    if run is not None:
+        try:
+            checkpoint = checkpoint_or_409(run)
+            if checkpoint.get("resolution") == "patch":
+                resolve_inference_contract(run, checkpoint, dataset, accept_unverified=False)
+        except HTTPException as exc:
+            if needs_model or exc.status_code != 409:
+                raise
+            checkpoint = None
+            notes.append(f"Selected without model scores: {exc.detail}")
 
     # Queries are patch-grid operations: embeddings are per-band patch
     # statistics, so only a patch-feature checkpoint can score them. A pixel
@@ -126,6 +128,8 @@ async def query_batch(
         model_checkpoint["stride"] if model_checkpoint else settings.resolved_stride()
     )
 
+    prediction_classes = list(run.classes) if model_checkpoint is not None else []
+
     def _compute():
         arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
         grid = make_grid(dataset.height, dataset.width, patch_size, stride)
@@ -135,8 +139,8 @@ async def query_batch(
         if model_checkpoint is not None:
             model = model_checkpoint["model"]
             raw = np.asarray(model.predict_proba(X))
-            model_classes = [project.classes[int(c)] for c in model.classes_]
-            probs = align_probabilities(raw, model_classes, project.classes)
+            model_classes = [prediction_classes[int(c)] for c in model.classes_]
+            probs = align_probabilities(raw, model_classes, prediction_classes)
         return grid, X, valid, probs
 
     try:
@@ -244,7 +248,7 @@ async def query_batch(
         prediction = confidence = unc = None
         if probs is not None:
             best = int(np.argmax(probs[i]))
-            prediction = project.classes[best]
+            prediction = prediction_classes[best]
             confidence = float(probs[i, best])
             unc = float(model_scores[i])
         samples.append(
@@ -295,6 +299,7 @@ async def query_batch(
             "stride": stride,
             "exclude_labeled": payload.exclude_labeled,
             "method": method_used,
+            "prediction_classes": prediction_classes,
         },
         model_iteration=run.iteration if model_checkpoint is not None else None,
         training_run_id=run.id if model_checkpoint is not None else None,
@@ -346,7 +351,26 @@ def _decision_counts(items: list[QueryItem]) -> dict[str, int]:
     return counts
 
 
-def _summary(batch: QueryBatch) -> QueryBatchSummary:
+async def _added_counts(session, project_id: int, batch_ids: list[int]) -> dict[int, int]:
+    if not batch_ids:
+        return {}
+    from sqlalchemy.orm import aliased
+
+    earlier = aliased(Label)
+    first_retained = ~select(earlier.id).where(
+        earlier.project_id == Label.project_id, earlier.sample_id == Label.sample_id,
+        earlier.version < Label.version, earlier.undone_at.is_(None),
+    ).exists()
+    rows = await session.execute(
+        select(Label.query_batch_id, func.count(Label.id)).where(
+            Label.project_id == project_id, first_retained, Label.undone_at.is_(None),
+            Label.query_item_id.is_not(None), Label.query_batch_id.in_(batch_ids),
+        ).group_by(Label.query_batch_id)
+    )
+    return {batch_id: count for batch_id, count in rows}
+
+
+def _summary(batch: QueryBatch, samples_added: int) -> QueryBatchSummary:
     return QueryBatchSummary(
         id=batch.id,
         project_id=batch.project_id,
@@ -365,6 +389,7 @@ def _summary(batch: QueryBatch) -> QueryBatchSummary:
         note=batch.note,
         created_at=batch.created_at,
         decisions=_decision_counts(batch.items),
+        samples_added=samples_added,
     )
 
 
@@ -387,7 +412,9 @@ async def list_query_batches(
         .order_by(QueryBatch.id.desc())
         .limit(limit)
     )
-    return [_summary(batch) for batch in result.scalars().unique().all()]
+    batches = result.scalars().unique().all()
+    added = await _added_counts(session, project_id, [batch.id for batch in batches])
+    return [_summary(batch, added.get(batch.id, 0)) for batch in batches]
 
 
 @router.get("/queries/{batch_id}", response_model=QueryBatchOut)
@@ -395,7 +422,8 @@ async def get_query_batch(project_id: int, batch_id: int, session: SessionDep) -
     """Reopen a batch from any session: same items, order and decisions."""
     await get_project(session, project_id)
     batch = await _get_batch(session, project_id, batch_id)
-    summary = _summary(batch)
+    added = await _added_counts(session, project_id, [batch.id])
+    summary = _summary(batch, added.get(batch.id, 0))
     return QueryBatchOut(
         **summary.model_dump(),
         items=[QueryItemOut.model_validate(item) for item in batch.items],
@@ -425,7 +453,7 @@ async def decide_query_item(
     if payload.status == "labeled":
         from ..models import Label
 
-        query = select(Label).where(Label.project_id == project_id, Label.sample_id == item.sample_id)
+        query = select(Label).where(Label.project_id == project_id, Label.sample_id == item.sample_id, Label.undone_at.is_(None))
         if payload.label_id is not None:
             query = query.where(Label.id == payload.label_id)
         result = await session.execute(query.order_by(Label.version.desc()))

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from ..models import Project
+from ..models import Label, Project
 from ..schemas import ProjectCreate, ProjectOut, ProjectUpdate, TaxonomyOut
 from ..services.taxonomy_service import (
     TaxonomyError,
@@ -68,6 +68,14 @@ async def update_project(project_id: int, payload: ProjectUpdate, session: Sessi
     data.pop("generic_classes", None)
     if not data:
         raise HTTPException(status_code=422, detail="No fields to update")
+    if payload.classes is not None:
+        removed = set(project.classes) - set(payload.classes)
+        if removed:
+            in_use = (await session.execute(select(Label.class_name).where(
+                Label.project_id == project_id, Label.class_name.in_(removed)
+            ).distinct())).scalars().all()
+            if in_use:
+                raise HTTPException(409, f"Cannot remove classes used by retained labels: {', '.join(sorted(in_use))}.")
     for field, value in data.items():
         if value is not None:
             setattr(project, field, value)
@@ -126,3 +134,23 @@ async def delete_project(project_id: int, session: SessionDep) -> None:
     project = await get_project(session, project_id)
     await session.delete(project)
     await session.commit()
+
+
+class AppendClass(BaseModel):
+    name: str
+
+
+@router.post('/{project_id}/classes', response_model=ProjectOut)
+async def append_class(project_id: int, payload: AppendClass, session: SessionDep) -> Project:
+    project = await get_project(session, project_id)
+    try:
+        classes = ProjectCreate.classes_unique_nonempty([*project.classes, payload.name])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    project.classes = classes
+    # The fixed legacy taxonomy cannot represent an arbitrary added class.
+    # Existing labels and run manifests remain unchanged.
+    project.taxonomy = None
+    await session.commit()
+    await session.refresh(project)
+    return project

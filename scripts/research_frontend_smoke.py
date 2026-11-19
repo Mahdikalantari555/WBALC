@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end smoke test for the SvelteKit research-workspace adapter.
 
-Runs against a live dev/preview server of `examples/wbalc-geospatial-research-interface`
+Runs against a live dev/preview server of `frontend`
 (default http://localhost:5173) which must proxy to a live RSAL backend, and
 drives only the *browser-facing* adapter routes:
 
@@ -17,6 +17,7 @@ The project it creates is deleted at the end. Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import io
 import re
 import sys
@@ -105,7 +106,7 @@ def main() -> None:
     base = args.base.rstrip("/")
     backend = args.backend.rstrip("/")
 
-    client = httpx.Client(base_url=base, timeout=180)
+    client = httpx.Client(base_url=base, timeout=180, headers={"Origin": base})
     direct = httpx.Client(base_url=backend, timeout=180)
 
     print(f"Research-workspace adapter smoke against {base}")
@@ -127,15 +128,15 @@ def main() -> None:
     check("Persian chrome string present in SSR", "فضای کار" in r_fa.text)
 
     # --------------------------------------------------------------- project
-    r = direct.post(
-        "/projects",
+    r = client.post(
+        "/api/projects",
         json={
             "name": "Adapter smoke project",
             "description": "research frontend e2e",
             "study_area_crs": "EPSG:4326",
         },
     )
-    check("create project (engine)", r.status_code == 201, str(r.status_code))
+    check("create project via adapter", r.status_code == 201, str(r.status_code))
     pid = r.json()["id"]
 
     try:
@@ -164,12 +165,12 @@ def main() -> None:
         tif = make_geotiff(256, 256)
         # Declared band names: the engine refuses to train or predict on rasters
         # whose ordered bands it cannot identify without an explicit override.
-        r = direct.post(
-            f"/projects/{pid}/upload",
+        r = client.post(
+            f"/api/projects/{pid}/datasets",
             files={"file": ("smoke.tif", tif, "image/tiff")},
             data={"band_names": "blue,green,red,nir", "sensor": "sentinel-2"},
         )
-        check("upload GeoTIFF (engine)", r.status_code == 201, str(r.status_code))
+        check("upload GeoTIFF via adapter", r.status_code == 201, str(r.status_code))
         did = r.json()["id"]
 
         r = client.get(f"/api/projects/{pid}/datasets")
@@ -608,10 +609,38 @@ def main() -> None:
         check("uncertainty batch after training", r.status_code == 200 and len(r.json()["samples"]) == 4)
         check("uncertainty scores present", r.json()["samples"][0]["uncertainty"] is not None)
 
+        uncertainty_batch = r.json()
+        export_path = f"/api/projects/{pid}/research-path"
+        research = client.get(export_path)
+        check("download project research path", research.status_code == 200
+              and research.headers["content-disposition"].startswith("attachment"), research.text[:120])
+        path = research.json()
+        rounds = {str(entry["id"]): entry for entry in path["sampling_rounds"]}
+        baseline = rounds[batch["batchId"]]
+        scored = rounds[uncertainty_batch["batchId"]]
+        linked_sample = baseline["items"][1]
+        check("research path counts first queried labels separately from manual labels",
+              baseline["samples_added"] == 1 and baseline["batch_size_returned"] == len(batch["samples"])
+              and linked_sample["status"] == "labeled" and linked_sample["prediction"] is None
+              and linked_sample["geo_coords"]["crs"] == "EPSG:32631")
+        check("research path preserves scores and model lineage",
+              scored["items"][0]["prediction"] == uncertainty_batch["samples"][0]["prediction"]
+              and scored["items"][0]["uncertainty"] == uncertainty_batch["samples"][0]["uncertainty"]
+              and any(run["id"] == scored["training_run_id"] and run["manifest"] for run in path["training_runs"]))
+        check("research path keeps manual revisions", any(label["version"] == 2 and label["provenance"] == "manual"
+                                                        for label in path["label_versions"]))
+        ledger = client.get(export_path, params={"format": "csv"})
+        rows = list(csv.DictReader(io.StringIO(ledger.text)))
+        check("sample ledger is downloadable and portable", ledger.status_code == 200
+              and len(rows) == sum(len(entry["items"]) or 1 for entry in rounds.values())
+              and any(row["id"] == str(linked_sample["id"]) and row["added_sample"] == "True"
+                      and float(row["pixel_center_x"]) == linked_sample["coords"]["center_x"]
+                      and row["map_crs"] == "EPSG:32631" for row in rows))
+
         # -------------------------------------------------------------- scenes
         for day, sensor in (("2025-01-10T08:00:00Z", "Sentinel-2"), ("2025-02-11T03:00:00Z", "Sentinel-1")):
-            r = direct.post(
-                f"/projects/{pid}/scenes",
+            r = client.post(
+                f"/api/projects/{pid}/scenes",
                 files={"file": (f"scene-{day[:10]}.tif", make_geotiff(64, 80), "image/tiff")},
                 data={"sensor": sensor, "acquisition_datetime": day},
             )

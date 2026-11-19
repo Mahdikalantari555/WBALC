@@ -2,8 +2,7 @@
 
 Audit date: 2026-11-18 · Branch `arena/8cc2470d-wbalc` (base `6d74b5b`)
 Scope: the FastAPI engine (`app/`), the SvelteKit research workspace
-(`examples/wbalc-geospatial-research-interface/`), and the Next.js TerraLab
-workspace (`frontend/`), plus the container/CI packaging.
+(`frontend/`), plus the container/CI packaging. The former Next.js TerraLab workspace has been removed.
 
 Measurement method: `scripts/audit_performance.py` (new) drives live HTTP with
 `httpx`, 5 repetitions per path, reporting p50/p95/min in milliseconds. It runs
@@ -156,7 +155,6 @@ None of these affect the current single-user workflow at the tested sizes.
 | P1 | `/predict/map` re-infers per request (~0.3–0.7 s) | Cache the field per (run, dataset, method) on the engine, invalidated by run id — the UI cache is a mitigation, not a fix | M | yes |
 | P2 | Map field payload is dense rows of numbers (32×32 = 1 K cells today; a 10 000² scene is 97 656 cells ≈ 1 MB JSON) | Serve a compact representation (base64/quantized or a small GeoTIFF/PNG reused for the canvas) once grids grow past ~256×256 | M | yes |
 | P3 | i18n dictionaries ship both locales in the initial bundle (~99 KB chunk) | Split per locale with a dynamic import when the bundle budget matters | S | no (frontend) |
-| P4 | `frontend/` (Next.js) still imports its whole workspace eagerly | Same per-view `dynamic()` treatment used here; measure with `next build` output first | S | no (frontend) |
 | P5 | No HTTP compression asserted on the adapter | The adapter-node build emits `.br`/`.gz` assets; verify the deployment fronts them with compression (the compose service has no reverse proxy) | S | no (deploy) |
 | P6 | SQLite without explicit WAL/pragma tuning | Enable WAL and a busy timeout if concurrent use is expected | S | yes |
 | P7 | No profiling harness in CI | `scripts/audit_performance.py` can gate a coarse budget (e.g. p95 < 50 ms for list endpoints) | M | no |
@@ -170,7 +168,7 @@ None of these affect the current single-user workflow at the tested sizes.
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # production build of the workspace
-cd examples/wbalc-geospatial-research-interface
+cd frontend
 npm ci && npm run build
 RSAL_API_URL=http://localhost:8000 PORT=5174 node build
 
@@ -180,7 +178,7 @@ cd /home/user/WBALC
 
 # correctness still holds after the changes
 .venv/bin/python scripts/research_frontend_smoke.py --base http://localhost:5174   # 63 checks
-cd examples/wbalc-geospatial-research-interface && npm run check && npm test && npm run check:i18n
+cd frontend && npm run check && npm test && npm run check:i18n
 ```
 
 ## 7. Changes made under this audit

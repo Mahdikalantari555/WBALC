@@ -45,7 +45,8 @@ def compose_text() -> str:
 # ------------------------------------------------------------------ structure
 def test_the_expected_services_exist(compose):
     services = compose["services"]
-    assert {"api", "frontend", "research-workspace", "db"} <= set(services)
+    assert set(services) == {"api", "frontend", "db"}
+    assert services["frontend"]["build"]["context"] == "./frontend"
 
 
 def test_every_dependency_target_exists(compose):
@@ -56,11 +57,8 @@ def test_every_dependency_target_exists(compose):
 
 def test_uis_wait_for_a_healthy_engine(compose):
     """`service_started` would let the UI boot before /health answers."""
-    for name in ("frontend", "research-workspace"):
-        depends = compose["services"][name]["depends_on"]
-        assert depends["api"]["condition"] == "service_healthy", (
-            f"{name} must wait for the api healthcheck, not just its start"
-        )
+    depends = compose["services"]["frontend"]["depends_on"]
+    assert depends["api"]["condition"] == "service_healthy"
 
 
 def test_dockerfiles_referenced_by_the_build_contexts_exist(compose):
@@ -94,8 +92,7 @@ def test_data_lives_in_named_volumes(compose):
 
 def test_optional_services_are_behind_profiles(compose):
     assert compose["services"]["db"].get("profiles") == ["postgres"]
-    assert compose["services"]["research-workspace"].get("profiles") == ["research"]
-    # The default `up` must not require either of them.
+    # The default `up` must not require an optional profile.
     for name in ("api", "frontend"):
         assert not compose["services"][name].get("profiles"), f"{name} should not be optional"
 

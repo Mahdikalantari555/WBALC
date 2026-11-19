@@ -16,6 +16,8 @@ from .api import (
     projects,
     query,
     research,
+    research_path,
+    raster_stack,
     scenes,
     som,
     temporal,
@@ -70,6 +72,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(lineage.router)
     app.include_router(temporal.router)
     app.include_router(research.router)
+    app.include_router(research_path.router)
+    app.include_router(raster_stack.router)
 
     @app.get("/health", tags=["health"])
     async def health():

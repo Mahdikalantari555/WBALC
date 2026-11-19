@@ -3,8 +3,8 @@
 WBALC is a research-oriented system for water-body monitoring from satellite
 imagery. This repository starts from the linked RSAL implementation and keeps
 its FastAPI + async SQLAlchemy backend, rasterio storage/inspection, and
-**TerraLab** Next.js workspace. The new multi-temporal scene foundation is
-specified in [`openspec/changes/add-multitemporal-scene-foundation/`](openspec/changes/add-multitemporal-scene-foundation/).
+**SvelteKit** research workspace. The new multi-temporal scene foundation is
+specified in [the scene ingestion specification](openspec/specs/scene-ingestion/spec.md).
 
 The WBALC scene collection registers independent Sentinel-1 and Sentinel-2
 GeoTIFF acquisitions with native-grid and sensor metadata. Registration keeps
@@ -17,13 +17,9 @@ Backend: FastAPI + async SQLAlchemy (SQLite by default, Postgres via env) +
 rasterio + scikit-learn / LightGBM. Training is synchronous (inherited MVP);
 heavy raster/ML work runs in a worker thread so the event loop stays responsive.
 
-Frontend: Next.js (App Router) workspace in [`frontend/`](frontend/), with a
-study-project form and project-scoped scene collection alongside inherited
-single-scene tools. The browser talks to the backend through a server-side
-adapter. An optional second, bilingual (English/Persian, RTL) SvelteKit research
-workspace lives in
-[`examples/wbalc-geospatial-research-interface/`](examples/wbalc-geospatial-research-interface/)
-and runs against the same engine.
+Frontend: the bilingual (English/Persian, RTL) SvelteKit research workspace in
+[`frontend/`](frontend/).
+The browser talks to the engine through a same-origin server adapter.
 
 ## Capabilities
 
@@ -59,10 +55,9 @@ Pick one path. Both bring up the same services; only the launcher differs.
 ### Everything in Docker
 
 ```bash
-./scripts/dev.sh up                 # engine :8000 + TerraLab UI :3000
-./scripts/dev.sh up --research      # ... plus the SvelteKit research workspace :5173
+./scripts/dev.sh up                 # engine :8000 + SvelteKit workspace :3000
 ./scripts/dev.sh up --postgres      # ... with Postgres instead of SQLite
-./scripts/dev.sh up --all --build   # both, forced rebuild
+./scripts/dev.sh up --all --build   # Postgres and a forced rebuild
 
 ./scripts/dev.sh ps                 # status + health per service
 ./scripts/dev.sh logs api           # follow one service
@@ -76,14 +71,13 @@ The script wraps `docker compose` and exists for the failure modes that a plain
 `--postgres` without `DATABASE_URL` (which would silently leave the engine on
 SQLite). It checks those first and says what to fix. `docker compose up -d
 --build` still works if you prefer it — the profiles are the same:
-`--profile research`, `--profile postgres`.
+`--profile postgres` is optional.
 
 ### Or natively, no Docker
 
 ```bash
-./scripts/up.sh                    # engine :8000 + Next.js workspace :3000
-./scripts/up.sh --research         # ... plus the research workspace :5173
-./scripts/up.sh --research --dev   # uvicorn --reload + vite dev (HMR)
+./scripts/up.sh                    # engine :8000 + SvelteKit workspace :3000
+./scripts/up.sh --dev              # uvicorn --reload + vite dev (HMR)
 ./scripts/up.sh status
 ./scripts/up.sh logs engine
 ./scripts/up.sh down
@@ -243,49 +237,35 @@ A full scripted walkthrough against a running server:
 .venv/bin/python scripts/demo.py --base-url http://localhost:8000
 ```
 
-## Frontend — TerraLab
+## Frontend — SvelteKit research workspace
+
+Open `http://localhost:3000` after either launcher. In **Project & data**, create
+or select a study and upload a training GeoTIFF. Use **Active Learning** to sample,
+annotate, and train. Upload independent dated scenes for **Temporal Analysis**.
+The frontend renders source imagery without requiring an online basemap.
+
+In **Active Learning → Query history → Export research path**, choose:
+
+- **JSON**: project and raster/scene metadata, all durable sampling rounds, all retained label versions, and training metrics and manifests.
+- **CSV**: one row per sampled item with batch counts, pixel position, available map coordinates and CRS, score, uncertainty, prediction, confidence, and decision.
+
+The `samples_added` count is the number of retained first label versions linked to
+that batch, not the number of suggestions or class corrections. Labels entered or
+imported separately remain in the JSON label ledger. Hard-deleted labels cannot be
+recovered. A round before model training can have null predictions or uncertainty.
+The research-path export is not a backup of raster or model binaries; spatial
+products remain downloadable in the map and temporal views.
+
+For standalone frontend development (with the engine already running):
 
 ```bash
 cd frontend
-npm install
-npm run dev            # http://localhost:3000 (backend expected on :8000)
-```
-
-Set `RSAL_API_URL` (and optionally `RSAL_API_TOKEN`) to point at your backend;
-see [`frontend/README.md`](frontend/README.md) for features, architecture, and
-Docker usage. With both services running, the browser-facing adapter is
-verified end-to-end by:
-
-```bash
-.venv/bin/python scripts/frontend_smoke.py --base http://localhost:3000
-```
-
-## Frontend — research workspace example (SvelteKit)
-
-An optional, self-contained SvelteKit 5 frontend in
-[`examples/wbalc-geospatial-research-interface/`](examples/wbalc-geospatial-research-interface/)
-offers six research views (overview, geospatial workspace, temporal analysis,
-active learning, model arena, results & evaluation) on live engine data, with an
-offline Leaflet map rendered from the original GeoTIFF bytes and a full
-Persian/English UI with RTL support. It is **not** a mock: like TerraLab it talks
-to RSAL through its own server-side adapter, and it is never a default compose
-service.
-
-```bash
-cd examples/wbalc-geospatial-research-interface
 npm ci
-RSAL_API_URL=http://localhost:8000 npm run dev   # http://localhost:5173
+RSAL_API_URL=http://localhost:8000 npm run dev   # Vite on :5173
 ```
 
-```bash
-# verified end-to-end through the example's adapter routes
-.venv/bin/python scripts/research_frontend_smoke.py --base http://localhost:5173
-```
-
-See the [example README](examples/wbalc-geospatial-research-interface/README.md)
-for env vars, scripts and design notes, and the OpenSpec change
-[`wire-geospatial-research-frontend`](openspec/changes/wire-geospatial-research-frontend/)
-for the capability specs.
+See the [workspace README](frontend/README.md)
+and [OpenSpec frontend contract](openspec/specs/primary-frontend/spec.md).
 
 ## Classification resolution and evaluation
 
@@ -726,10 +706,8 @@ app/
   services/          # raster/grid, AL strategies, label resolution, training, export
 tests/               # backend unit/API tests incl. synthetic multi-sensor scenes
 scripts/demo.py      # end-to-end AL loop against a live backend
-scripts/frontend_smoke.py  # end-to-end loop through the frontend adapter
-frontend/            # TerraLab Next.js workspace (see frontend/README.md)
-examples/wbalc-geospatial-research-interface/  # bilingual SvelteKit example (adapter + six views)
-scripts/research_frontend_smoke.py             # end-to-end loop through the example's adapter
+frontend/  # bilingual SvelteKit workspace
+scripts/research_frontend_smoke.py             # end-to-end loop through the workspace adapter
 openspec/            # spec-driven change proposals + capability specs
 ```
 
@@ -750,13 +728,10 @@ API responses), research protocols (random/spatial/temporal disjointness, buffer
 reach, insufficiency), held-out metric semantics, reference-area guards, report
 regeneration, and migration of an RSAL-style project database (versions 1…10).
 
-The frontend suite is `cd frontend && npm test` (25 node:test cases: shared
-pixel↔display transform, overlay colours, adapter payload builders).
-
-The research-workspace example has its own suites:
+The SvelteKit workspace has its own suites:
 
 ```bash
-cd examples/wbalc-geospatial-research-interface
+cd frontend
 npm run check          # svelte-check + TypeScript
 npm test               # Vitest: geometry, adapter shaping, i18n, jsdom components
 npm run check:i18n     # en/fa dictionary completeness + placeholder parity
@@ -765,8 +740,8 @@ npm run check:i18n     # en/fa dictionary completeness + placeholder parity
 Its browser-facing contract is verified end-to-end (project → upload → query →
 label → train → metrics/map/exports → scenes → import → delete → protocols →
 held-out evaluation → reference area → plan comparison → report bundle → i18n) by
-`scripts/research_frontend_smoke.py` (140 checks), which needs a live engine and the
-example running against it.
+`scripts/research_frontend_smoke.py`, which needs a live engine and the
+workspace running against it.
 
 `scripts/audit_performance.py` measures the same app against a live engine
 (adapter overhead, raster streaming, query/train/inference cost, SSR) and
