@@ -6,8 +6,8 @@ import hashlib
 from pathlib import Path
 
 import anyio
-from fastapi import APIRouter, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete as sa_delete, select
 
 from ..config import Settings
@@ -19,6 +19,7 @@ from ..services.raster_service import (
     extract_metadata,
     make_grid,
 )
+from ..services.raster_preview import PreviewError, inspect_raster_pixel, render_raster_preview
 from ..services.schema_service import build_band_schema
 from ..storage import project_dir, unique_name
 from .deps import SessionDep, SettingsDep, get_dataset, get_project
@@ -167,6 +168,63 @@ async def download_dataset_file(project_id: int, dataset_id: int, session: Sessi
     if not path.exists():
         raise HTTPException(status_code=404, detail="Dataset file missing from storage")
     return FileResponse(path, media_type="image/tiff", filename=dataset.filename)
+
+
+@router.get("/dataset/{dataset_id}/preview")
+async def preview_dataset_file(
+    project_id: int,
+    dataset_id: int,
+    session: SessionDep,
+    mode: str = "true-color",
+    size: int = Query(default=1400, ge=16, le=2048),
+    x0: int | None = Query(default=None, ge=0),
+    y0: int | None = Query(default=None, ge=0),
+    x1: int | None = Query(default=None, ge=1),
+    y1: int | None = Query(default=None, ge=1),
+    upscale: bool = False,
+) -> Response:
+    """GDAL preview fallback for TIFF variants not decoded by geotiff.js."""
+    await get_project(session, project_id)
+    dataset = await get_dataset(session, project_id, dataset_id)
+    path = Path(dataset.path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Dataset file missing from storage")
+    coordinates = (x0, y0, x1, y1)
+    if any(value is not None for value in coordinates) and not all(value is not None for value in coordinates):
+        raise HTTPException(status_code=422, detail="A preview window must provide x0, y0, x1, and y1")
+    window = tuple(coordinates) if all(value is not None for value in coordinates) else None
+    names = (dataset.band_schema or {}).get("band_names")
+    try:
+        png = await anyio.to_thread.run_sync(
+            lambda: render_raster_preview(path, mode=mode, size=size, names=names, window=window, upscale=upscale)
+        )
+    except PreviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=60"})
+
+
+@router.get("/dataset/{dataset_id}/pixel")
+async def inspect_dataset_pixel(
+    project_id: int,
+    dataset_id: int,
+    session: SessionDep,
+    x: int = Query(ge=0),
+    y: int = Query(ge=0),
+    mode: str = "true-color",
+) -> dict:
+    """GDAL pixel-probe fallback for TIFFs the browser decoder cannot inspect."""
+    await get_project(session, project_id)
+    dataset = await get_dataset(session, project_id, dataset_id)
+    path = Path(dataset.path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Dataset file missing from storage")
+    names = (dataset.band_schema or {}).get("band_names")
+    try:
+        return await anyio.to_thread.run_sync(
+            lambda: inspect_raster_pixel(path, x=x, y=y, mode=mode, names=names)
+        )
+    except PreviewError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.delete("/dataset/{dataset_id}", status_code=204)

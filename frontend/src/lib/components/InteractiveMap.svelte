@@ -199,7 +199,7 @@
       mode === 'map' && box
         ? L.map(host, {
             zoomControl: false,
-            attributionControl: false,
+            attributionControl: true,
             minZoom: 2,
             maxZoom: 19,
             worldCopyJump: true,
@@ -212,6 +212,15 @@
             zoomDelta: 0.5,
             wheelPxPerZoomLevel: 110,
           });
+
+    // OpenStreetMap is the only geographic basemap; pixel-space rasters stay
+    // on a plain canvas because their coordinates cannot be overlaid on tiles.
+    if (mode === 'map' && box) {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }).addTo(map);
+    }
 
     const bounds =
       mode === 'map' && box

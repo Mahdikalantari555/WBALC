@@ -73,3 +73,50 @@ scaling behaviour on a 1024² and a 2048² scene, ranked bottlenecks and
 recommendations. It is not a stabilization record — this file stays scoped to
 correctness. Two findings from that audit were fixed in the workspace under this
 change (per-view code splitting and map-field memoization).
+
+## Raster intake and map follow-up (2026-11-19)
+
+- Folder/manual band intake now skips `merged.tif` (and merged-name variants),
+  normalizes Sentinel band aliases including NIR08, B11/SWIR16, B12/SWIR22 and
+  SCL, and can read STAC-style or MTL-style JSON metadata for acquisition time,
+  sensor/platform, processing/product details, orbit and band resolutions.
+- Single-band imports with co-registered native resolutions use the finest
+  source grid when CRS and footprint match and coarser grids are integer-aligned.
+  Continuous bands (including SWIR) use bilinear resampling; SCL/QA use nearest.
+  Source scale/offset are applied, the alignment is recorded on scenes, and
+  shifted/cropped/non-nested grids, CRS changes, merged inputs and multiband
+  inputs still fail with actionable validation errors. Reprojection is not
+  silently performed.
+- Project-area intake normalizes Polygon/MultiPolygon geometries, Features and
+  polygon FeatureCollections. Collections are combined into one Polygon or
+  MultiPolygon, with a declared GeoJSON CRS preserved (WGS84 assumed when absent).
+  The API boundary also accepts Feature/FeatureCollection payloads.
+- The geographic map now has OpenStreetMap as its only basemap, with required
+  attribution. Pixel-space rasters remain on a plain canvas.
+- A bounded GDAL PNG preview and exact-pixel probe are available as fallbacks
+  when geotiff.js cannot decode/read a TIFF. The browser no longer downloads an
+  entire large TIFF as an implicit fallback. Both dataset and scene routes are
+  project-scoped and window/pixel bounds are validated.
+
+### Follow-up verification and residuals
+
+- `./.venv/bin/python -m pytest -q --disable-warnings`: **367 passed, 1 skipped**
+  (368 tests collected).
+- `frontend`: `npm test` **120 passed**; `npm run check` **0 errors / 0
+  warnings**; `npm run check:i18n` **666 matching keys**; production build passed.
+- Stack tests cover 10 m / 20 m SWIR alignment, scale/offset, nearest-neighbour
+  SCL preservation, merged/multiband rejection and invalid-grid rejection.
+  Preview tests cover bounded PNG dimensions, pixel-window reads, named-band
+  probes, nodata/bounds errors and project isolation.
+- The reported `Offset is outside the bounds of the DataView` has not been
+  reproduced against the user's original TIFF (no sample was supplied). A
+  generated tiled/deflate GeoTIFF with the stack output profile reads successfully
+  through geotiff.js Range requests; the library's inclusive range-end
+  construction remains a possible, unproven contributor. The server preview/probe paths prevent that decoder error from
+  blocking map imagery or pixel inspection, but root-cause confirmation still
+  requires the failing file or a minimal reproduction.
+- The UI requests standard OSM tiles directly from `tile.openstreetmap.org`; the
+  browser needs network access to that service. No alternate basemap is offered.
+- Test tooling still emits non-failing deprecation notices for Vitest's
+  `environmentMatchGlobs`, Starlette's `httpx` test client integration, and
+  Rasterio's affine multiplication operator.

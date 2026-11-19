@@ -7,7 +7,7 @@
  * the adapter forwards Range upstream. Nothing here reprojects or resamples the
  * source file for storage — the render is a derived PNG in memory only.
  */
-import { fromArrayBuffer, fromUrl, type GeoTIFFImage } from 'geotiff';
+import { fromUrl, type GeoTIFFImage } from 'geotiff';
 
 export type BandMode = 'true-color' | 'false-color' | 'ndvi' | `band:${number}` | `nd:${number}:${number}`;
 
@@ -18,12 +18,20 @@ interface Handle {
   stretchRequest?: Promise<Map<number, [number, number]>>;
 }
 
-const handles = new Map<string, Promise<Handle>>();
+export interface RasterPixelInspection {
+  bands: { name: string; value: number | null }[];
+  difference: boolean;
+  index: number | null;
+}
+
+const handles = new Map<string, { datasetId: string; promise: Promise<Handle> }>();
 const HANDLE_CAP = 3;
 
 export function forgetRaster(datasetId?: string) {
   if (datasetId === undefined) handles.clear();
-  else handles.delete(datasetId);
+  else {
+    for (const [key, value] of handles) if (value.datasetId === datasetId) handles.delete(key);
+  }
 }
 
 async function rasterHandle(tiff: Awaited<ReturnType<typeof fromUrl>>): Promise<Handle> {
@@ -40,26 +48,20 @@ async function rasterHandle(tiff: Awaited<ReturnType<typeof fromUrl>>): Promise<
 }
 
 async function loadHandle(url: string, datasetId: string): Promise<Handle> {
-  const cached = handles.get(datasetId);
+  // Include the project-scoped URL: dataset IDs are only unique inside a project.
+  const key = `${datasetId}\u0000${url}`;
+  const cached = handles.get(key);
   if (cached) {
     // Refresh LRU order.
-    handles.delete(datasetId);
-    handles.set(datasetId, cached);
-    return cached;
+    handles.delete(key);
+    handles.set(key, cached);
+    return cached.promise;
   }
-  const promise = (async () => {
-    try {
-      const tiff = await fromUrl(url, { allowFullFile: true, maxRanges: 4 });
-      return await rasterHandle(tiff);
-    } catch (error) {
-      // A host without Range support still works: read the file once.
-      const response = await fetch(url).catch(() => null);
-      if (!response?.ok) throw error;
-      const tiff = await fromArrayBuffer(await response.arrayBuffer());
-      return await rasterHandle(tiff);
-    }
-  })();
-  handles.set(datasetId, promise);
+  // Never silently download a potentially multi-gigabyte TIFF when a proxy
+  // ignores Range. Rendering has a server-side, bounded PNG fallback instead.
+  const promise = fromUrl(url, { allowFullFile: false, maxRanges: 4 }).then(rasterHandle);
+  const entry = { datasetId, promise };
+  handles.set(key, entry);
   while (handles.size > HANDLE_CAP) {
     const oldest = handles.keys().next().value;
     if (oldest === undefined) break;
@@ -68,29 +70,40 @@ async function loadHandle(url: string, datasetId: string): Promise<Handle> {
   try {
     return await promise;
   } catch (error) {
-    handles.delete(datasetId);
+    handles.delete(key);
     throw error;
   }
 }
 
-export async function inspectRasterPixel(url: string, id: string, col: number, row: number, mode: BandMode, names?: string[] | null) {
-  const handle = await loadHandle(url, id);
-  const image = handle.image;
-  const bandCount = image.getSamplesPerPixel();
-  const view = channelsFor(mode, bandCount, names);
-  const samples = [...new Set(view.difference ? [view.nir, view.red] : view.channels)];
-  const window = [col, row, col + 1, row + 1];
-  const mask = await handle.mask();
-  const masked = mask ? Number((await mask.readRasters({ window, samples: [0], interleave: true }))[0]) === 0 : false;
-  const values = await image.readRasters({ window, samples, interleave: true });
-  const noData = image.getGDALNoData();
-  const bands = samples.map((band, index) => {
-    const value = Number(values[index]);
-    return { name: names?.[band] || `#${band + 1}`, value: masked || !Number.isFinite(value) || value === noData ? null : value };
-  });
-  const [a, b] = bands;
-  const index = view.difference && a?.value != null && b?.value != null && a.value + b.value !== 0 ? (a.value - b.value) / (a.value + b.value) : null;
-  return { bands, difference: view.difference, index };
+export async function inspectRasterPixel(
+  url: string, id: string, col: number, row: number, mode: BandMode, names?: string[] | null,
+): Promise<RasterPixelInspection> {
+  try {
+    const handle = await loadHandle(url, id);
+    const image = handle.image;
+    const bandCount = image.getSamplesPerPixel();
+    const view = channelsFor(mode, bandCount, names);
+    const samples = [...new Set(view.difference ? [view.nir, view.red] : view.channels)];
+    const window = [col, row, col + 1, row + 1];
+    const mask = await handle.mask();
+    const masked = mask ? Number((await mask.readRasters({ window, samples: [0], interleave: true }))[0]) === 0 : false;
+    const values = await image.readRasters({ window, samples, interleave: true });
+    const noData = image.getGDALNoData();
+    const bands = samples.map((band, index) => {
+      const value = Number(values[index]);
+      return { name: names?.[band] || `#${band + 1}`, value: masked || !Number.isFinite(value) || value === noData ? null : value };
+    });
+    const [a, b] = bands;
+    const index = view.difference && a?.value != null && b?.value != null && a.value + b.value !== 0 ? (a.value - b.value) / (a.value + b.value) : null;
+    return { bands, difference: view.difference, index };
+  } catch (error) {
+    forgetRaster(id);
+    try {
+      return await backendPixel(url, col, row, mode);
+    } catch (fallbackError) {
+      throw new Error(`${describe(error)}. ${describe(fallbackError)}`);
+    }
+  }
 }
 
 /**
@@ -154,7 +167,7 @@ export function channelsFor(mode: BandMode, bandCount: number, names?: string[] 
   const red = lookup('red', 'b04', 'b4');
   const green = lookup('green', 'b03', 'b3');
   const blue = lookup('blue', 'b02', 'b2');
-  const nir = lookup('nir', 'b08', 'b8');
+  const nir = lookup('nir', 'nir08', 'nir_08', 'b08', 'b8');
   const valid = (...indices: number[]) => indices.every(i => Number.isInteger(i) && i >= 0 && i < bandCount);
   const fallback = { channels: [0, 0, 0], red: 0, nir: 0, difference: false };
   if (mode.startsWith('band:')) {
@@ -221,6 +234,65 @@ function paint(
   return canvas.toDataURL('image/png');
 }
 
+async function backendPreview(
+  url: string,
+  mode: BandMode,
+  size: number,
+  window?: { x0: number; y0: number; x1: number; y1: number },
+): Promise<string> {
+  const endpoint = url.replace(/\/file(?:\?.*)?$/, '/preview');
+  if (endpoint === url) throw new Error('No server-side preview route is available for this raster.');
+  const query = new URLSearchParams({ mode, size: String(size) });
+  if (window) {
+    query.set('x0', String(window.x0)); query.set('y0', String(window.y0));
+    query.set('x1', String(window.x1)); query.set('y1', String(window.y1));
+    query.set('upscale', 'true');
+  }
+  const response = await fetch(`${endpoint}?${query}`, { headers: { accept: 'image/png' } });
+  if (!response.ok) {
+    const failure = await response.json().catch(() => null) as { message?: unknown } | null;
+    throw new Error(typeof failure?.message === 'string' ? failure.message : `Server preview failed (${response.status}).`);
+  }
+  if (!response.headers.get('content-type')?.toLowerCase().includes('image/png')) {
+    throw new Error('The server returned an invalid raster preview.');
+  }
+  const blob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read the raster preview.'));
+    reader.onerror = () => reject(new Error('Could not read the raster preview.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function backendPixel(
+  url: string,
+  x: number,
+  y: number,
+  mode: BandMode,
+): Promise<RasterPixelInspection> {
+  const endpoint = url.replace(/\/file(?:\?.*)?$/, '/pixel');
+  if (endpoint === url) throw new Error('No server-side pixel probe is available for this raster.');
+  const query = new URLSearchParams({ mode, x: String(x), y: String(y) });
+  const response = await fetch(`${endpoint}?${query}`, { headers: { accept: 'application/json' } });
+  const result: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = result && typeof result === 'object' ? (result as { message?: unknown }).message : null;
+    throw new Error(typeof message === 'string' ? message : `Server pixel probe failed (${response.status}).`);
+  }
+  if (!result || typeof result !== 'object') throw new Error('The server returned an invalid pixel probe.');
+  const probe = result as Record<string, unknown>;
+  if (!Array.isArray(probe.bands) || typeof probe.difference !== 'boolean' ||
+      !(probe.index === null || typeof probe.index === 'number')) {
+    throw new Error('The server returned an invalid pixel probe.');
+  }
+  return probe as unknown as RasterPixelInspection;
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Whole-scene preview, capped so a huge scene does not exhaust canvas memory. */
 export async function renderRaster(
   url: string,
@@ -229,24 +301,28 @@ export async function renderRaster(
   maxSize = 1400,
   names?: string[] | null,
 ): Promise<string> {
-  const handle = await loadHandle(url, datasetId);
-  const image = handle.image;
-  const ratio = Math.min(1, maxSize / Math.max(image.getWidth(), image.getHeight()));
-  const width = Math.max(1, Math.round(image.getWidth() * ratio));
-  const height = Math.max(1, Math.round(image.getHeight() * ratio));
-  const bandCount = image.getSamplesPerPixel();
-  const { channels, red, nir, difference } = channelsFor(mode, bandCount, names);
-  const unique = [...new Set(channels)];
-  const stretch = await ensureStretch(handle);
-  const ranges = unique.map((band) => stretch.get(band) ?? ([0, 255] as [number, number]));
-  const raster = await image.readRasters({
-    samples: unique,
-    width,
-    height,
-    interleave: false,
-  });
-  const arrays = unique.map((_, i) => raster[i] as ArrayLike<number>);
-  return paint(image, arrays, unique, channels, red, nir, difference, ranges, width, height);
+  try {
+    const handle = await loadHandle(url, datasetId);
+    const image = handle.image;
+    const ratio = Math.min(1, maxSize / Math.max(image.getWidth(), image.getHeight()));
+    const width = Math.max(1, Math.round(image.getWidth() * ratio));
+    const height = Math.max(1, Math.round(image.getHeight() * ratio));
+    const bandCount = image.getSamplesPerPixel();
+    const { channels, red, nir, difference } = channelsFor(mode, bandCount, names);
+    const unique = [...new Set(channels)];
+    const stretch = await ensureStretch(handle);
+    const ranges = unique.map((band) => stretch.get(band) ?? ([0, 255] as [number, number]));
+    const raster = await image.readRasters({ samples: unique, width, height, interleave: false });
+    const arrays = unique.map((_, i) => raster[i] as ArrayLike<number>);
+    return paint(image, arrays, unique, channels, red, nir, difference, ranges, width, height);
+  } catch (error) {
+    forgetRaster(datasetId);
+    try {
+      return await backendPreview(url, mode, maxSize);
+    } catch (fallbackError) {
+      throw new Error(`${describe(error)}. ${describe(fallbackError)}`);
+    }
+  }
 }
 
 /** Exact-window render used by review thumbnails: no CSS scaling, real pixels. */
@@ -258,39 +334,48 @@ export async function renderWindow(
   size = 128,
   names?: string[] | null,
 ): Promise<string> {
-  const handle = await loadHandle(url, datasetId);
-  const image = handle.image;
-  const bandCount = image.getSamplesPerPixel();
-  const { channels, red, nir, difference } = channelsFor(mode, bandCount, names);
-  const unique = [...new Set(channels)];
-  const width = Math.max(1, Math.round(window.x1 - window.x0));
-  const height = Math.max(1, Math.round(window.y1 - window.y0));
-  const stretch = await ensureStretch(handle);
-  const ranges = unique.map((band) => stretch.get(band) ?? ([0, 255] as [number, number]));
-  const raster = await image.readRasters({
-    samples: unique,
-    window: [window.x0, window.y0, window.x1, window.y1],
-    interleave: false,
-  });
-  const arrays = unique.map((_, i) => raster[i] as ArrayLike<number>);
-  const dataUrl = paint(image, arrays, unique, channels, red, nir, difference, ranges, width, height);
+  try {
+    const handle = await loadHandle(url, datasetId);
+    const image = handle.image;
+    const bandCount = image.getSamplesPerPixel();
+    const { channels, red, nir, difference } = channelsFor(mode, bandCount, names);
+    const unique = [...new Set(channels)];
+    const width = Math.max(1, Math.round(window.x1 - window.x0));
+    const height = Math.max(1, Math.round(window.y1 - window.y0));
+    const stretch = await ensureStretch(handle);
+    const ranges = unique.map((band) => stretch.get(band) ?? ([0, 255] as [number, number]));
+    const raster = await image.readRasters({
+      samples: unique,
+      window: [window.x0, window.y0, window.x1, window.y1],
+      interleave: false,
+    });
+    const arrays = unique.map((_, i) => raster[i] as ArrayLike<number>);
+    const dataUrl = paint(image, arrays, unique, channels, red, nir, difference, ranges, width, height);
 
-  // Nearest-neighbour upscale so a 32px patch stays blocky rather than blurring
-  // into something that looks like a different place.
-  const scale = size / Math.max(width, height);
-  if (scale <= 1) return dataUrl;
-  const scaled = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Could not decode the rendered preview.'));
-    img.src = dataUrl;
-  });
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return dataUrl;
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(scaled, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/png');
+    // Nearest-neighbour upscale so a 32px patch stays blocky rather than blurring
+    // into something that looks like a different place.
+    const scale = size / Math.max(width, height);
+    if (scale <= 1) return dataUrl;
+    const scaled = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Could not decode the rendered preview.'));
+      img.src = dataUrl;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(scaled, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/png');
+  } catch (error) {
+    forgetRaster(datasetId);
+    try {
+      return await backendPreview(url, mode, size, window);
+    } catch (fallbackError) {
+      throw new Error(`${describe(error)}. ${describe(fallbackError)}`);
+    }
+  }
 }

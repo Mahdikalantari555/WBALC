@@ -67,6 +67,40 @@ class TestSceneFoundation:
         assert read["study_area_crs"] == "EPSG:4326"
         assert read["study_area_geometry"]["type"] == "Polygon"
 
+        collection = client.post("/projects", json={
+            "name": "multi-feature study",
+            "study_area_crs": "EPSG:4326",
+            "study_area_geometry": {"type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {}, "geometry": {
+                    "type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}},
+                {"type": "Feature", "properties": {}, "geometry": {
+                    "type": "Polygon", "coordinates": [[[2, 0], [3, 0], [3, 1], [2, 0]]]}},
+            ]},
+        })
+        assert collection.status_code == 201, collection.text
+        assert collection.json()["study_area_geometry"]["type"] == "MultiPolygon"
+        assert len(collection.json()["study_area_geometry"]["coordinates"]) == 2
+
+        feature = client.post("/projects", json={
+            "name": "feature study",
+            "study_area_crs": "EPSG:4326",
+            "study_area_geometry": {"type": "Feature", "properties": {}, "geometry": {
+                "type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}}
+        })
+        assert feature.status_code == 201, feature.text
+        assert feature.json()["study_area_geometry"]["type"] == "Polygon"
+
+        multi = client.post("/projects", json={
+            "name": "multi geometry study",
+            "study_area_crs": "EPSG:4326",
+            "study_area_geometry": {"type": "MultiPolygon", "coordinates": [
+                [[[0, 0], [1, 0], [1, 1], [0, 0]]],
+                [[[2, 0], [3, 0], [3, 1], [2, 0]]],
+            ]},
+        })
+        assert multi.status_code == 201, multi.text
+        assert multi.json()["study_area_geometry"]["type"] == "MultiPolygon"
+
     def test_project_defaults_and_binary_semantics(self, client):
         created = client.post("/projects", json={"name": "wetland"})
         assert created.status_code == 201, created.text

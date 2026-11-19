@@ -17,6 +17,35 @@ BinaryInterpretation = Literal["water_vs_non_water", "open_water_vs_other"]
 def _validate_study_geometry(value: dict[str, Any] | None) -> dict[str, Any] | None:
     if value is None:
         return None
+    # GIS applications commonly export Feature or FeatureCollection documents,
+    # while the project stores one bare GeoJSON geometry. Normalize those forms
+    # at the API boundary so a collection of disjoint polygons remains a valid
+    # MultiPolygon instead of being rejected as an unknown geometry type.
+    if value.get("type") == "Feature":
+        geometry = value.get("geometry")
+        if not isinstance(geometry, dict):
+            raise ValueError("study-area Feature must contain a Polygon or MultiPolygon geometry")
+        value = geometry
+    elif value.get("type") == "FeatureCollection":
+        features = value.get("features")
+        if not isinstance(features, list) or not features:
+            raise ValueError("study-area FeatureCollection must contain polygon features")
+        polygons = []
+        for feature in features:
+            geometry = feature.get("geometry") if isinstance(feature, dict) and feature.get("type") == "Feature" else None
+            if not isinstance(geometry, dict):
+                raise ValueError("each study-area Feature must contain a Polygon or MultiPolygon geometry")
+            if geometry.get("type") == "Polygon" and isinstance(geometry.get("coordinates"), list):
+                polygons.append(geometry["coordinates"])
+            elif geometry.get("type") == "MultiPolygon" and isinstance(geometry.get("coordinates"), list):
+                polygons.extend(geometry["coordinates"])
+            else:
+                raise ValueError("study-area FeatureCollection may contain only Polygon or MultiPolygon features")
+        value = (
+            {"type": "Polygon", "coordinates": polygons[0]}
+            if len(polygons) == 1
+            else {"type": "MultiPolygon", "coordinates": polygons}
+        )
     if value.get("type") not in {"Polygon", "MultiPolygon"}:
         raise ValueError("study-area geometry must be a GeoJSON Polygon or MultiPolygon")
     coordinates = value.get("coordinates")
@@ -33,10 +62,14 @@ def _validate_study_geometry(value: dict[str, Any] | None) -> dict[str, Any] | N
             for position in ring:
                 if not isinstance(position, (list, tuple)) or len(position) < 2:
                     raise ValueError("study-area positions must be finite [x, y] coordinates")
-                pair = position[:2]
-                if not all(isinstance(item, (int, float)) and math.isfinite(item) for item in pair):
-                    raise ValueError("study-area positions must be finite [x, y] coordinates")
-                positions.append(list(pair))
+                if not all(
+                    not isinstance(item, bool) and isinstance(item, (int, float)) and math.isfinite(item)
+                    for item in position
+                ):
+                    raise ValueError("study-area positions must be finite numeric coordinates")
+                positions.append(list(position))
+            if any(len(position) != len(positions[0]) for position in positions):
+                raise ValueError("study-area ring positions must use a consistent coordinate dimension")
             if positions[0] != positions[-1]:
                 raise ValueError("study-area polygon rings must be closed")
     return value
