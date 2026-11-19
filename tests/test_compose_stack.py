@@ -178,3 +178,12 @@ def test_windows_launcher_parses_in_powershell():
     """
     result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_windows_launcher_requires_active_geo_without_venv_or_implicit_install():
+    text = (ROOT / "scripts" / "up.ps1").read_text(encoding="utf-8")
+    assert '$env:CONDA_DEFAULT_ENV -ne "geo"' in text
+    assert 'Join-Path $env:CONDA_PREFIX "python.exe"' in text
+    assert 'WBALC_PYTHON' not in text and '.venv' not in text
+    assert ' -m venv ' not in text and '& $python -m pip' not in text
+    assert 'Cannot verify that the engine' in text
