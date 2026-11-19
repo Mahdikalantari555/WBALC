@@ -83,6 +83,21 @@ SQLite). It checks those first and says what to fix. `docker compose up -d
 ./scripts/up.sh down
 ```
 
+On Windows, use PowerShell from the repository root:
+
+```powershell
+.\scripts\up.ps1 up
+.\scripts\up.ps1 status
+.\scripts\up.ps1 logs frontend
+.\scripts\up.ps1 down
+```
+
+The Windows launcher builds the same SvelteKit app in `frontend/` and starts
+it at `http://localhost:3000`. Use `up --dev` for Vite, or set `FRONTEND_PORT`
+before starting to change the port. If an older launcher left a process on the
+port, run `down` first. By default the launcher uses `.venv\Scripts\python.exe`;
+set `WBALC_PYTHON` to use an existing compatible Python interpreter instead.
+
 This creates `.venv` if needed, waits for the engine's `/health` before starting
 any UI, writes pid files under `.run/` and one log per service. Use it in
 sandboxes without a Docker daemon, or when you want reload/HMR.

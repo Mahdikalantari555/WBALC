@@ -154,3 +154,27 @@ def test_dev_script_fails_clearly_without_docker():
     )
     assert result.returncode != 0, "it must not report success when it cannot start anything"
     assert "docker" in (result.stderr + result.stdout).lower()
+
+
+def test_windows_launcher_uses_the_primary_workspace_and_adapter_health():
+    text = (ROOT / "scripts" / "up.ps1").read_text(encoding="utf-8")
+    assert 'Join-Path $Root "frontend"' in text
+    assert "npm.cmd run build" in text and "node.exe build" in text
+    assert "npm.cmd run dev -- --port" in text and "--strictPort" in text
+    assert "package-lock.json" in text and "npm.cmd ci" in text
+    assert "/api/health" in text and "$body.engine -eq $true" in text
+    assert "BODY_SIZE_LIMIT" in text and "ORIGIN" in text
+    for obsolete in (".next", "--webpack", "BUILD_STANDALONE", "examples\\wbalc-geospatial-research-interface"):
+        assert obsolete not in text
+
+
+@pytest.mark.skipif(not shutil.which("pwsh"), reason="PowerShell is not installed")
+def test_windows_launcher_parses_in_powershell():
+    script = """
+    $tokens = $null; $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path (Get-Location) 'scripts/up.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+    if ($errors.Count) { $errors | Out-String | Write-Host; exit 1 }
+    """
+    result = subprocess.run(["pwsh", "-NoProfile", "-Command", script], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -1,6 +1,5 @@
 # Run the whole stack natively on Windows (PowerShell port of scripts/up.sh).
-#   .\scripts\up.ps1 up                engine :8000 + Next.js workspace :3000
-#   .\scripts\up.ps1 up --research     ... plus SvelteKit research workspace :5173
+#   .\scripts\up.ps1 up                engine :8000 + SvelteKit workspace :3000
 #   .\scripts\up.ps1 up --dev          vite dev server instead of production build
 #   .\scripts\up.ps1 status            what is running
 #   .\scripts\up.ps1 down              stop everything
@@ -14,10 +13,10 @@ $LogDir = Join-Path $RunDir "logs"
 
 $ApiPort = if ($env:API_PORT) { $env:API_PORT } else { "8000" }
 $FrontendPort = if ($env:FRONTEND_PORT) { $env:FRONTEND_PORT } else { "3000" }
-$ResearchPort = if ($env:RESEARCH_PORT) { $env:RESEARCH_PORT } else { "5173" }
-
-$Python = "D:\Dev\Miniforge3\envs\geo\python.exe"
-if (!(Test-Path $Python)) { $Python = "python" }
+$FrontendDir = Join-Path $Root "frontend"
+$EngineHealth = "http://localhost:$ApiPort/health"
+$FrontendHealth = "http://localhost:$FrontendPort/api/health"
+$Python = if ($env:WBALC_PYTHON) { $env:WBALC_PYTHON } else { Join-Path $Root ".venv\Scripts\python.exe" }
 
 function Say($m) { Write-Host $m }
 function Ok($m) { Write-Host "[OK] $m" -ForegroundColor Green }
@@ -25,9 +24,8 @@ function Warn($m) { Write-Host "[!] $m" -ForegroundColor Yellow }
 function Die($m) { Write-Host "[X] $m" -ForegroundColor Red; exit 1 }
 
 # ---- arg parsing ----
-$Command = ""
-$ResearchUi = 0
-$NextUi = 1
+$Command = "up"
+$Frontend = 1
 $DevMode = 0
 $Rebuild = 0
 $LogsName = "engine"
@@ -39,8 +37,8 @@ while ($i -lt $args.Count) {
         "down" { $Command = "down" }
         "status" { $Command = "status" }
         "logs" { $Command = "logs"; if ($i + 1 -lt $args.Count) { $LogsName = $args[$i+1]; $i++ } }
-        "--research" { $ResearchUi = 1 }
-        "--no-frontend" { $NextUi = 0 }
+        "--research" { } # Backward-compatible no-op: there is only one UI.
+        "--no-frontend" { $Frontend = 0 }
         "--dev" { $DevMode = 1 }
         "--rebuild" { $Rebuild = 1 }
         "--build" { $Rebuild = 1 }
@@ -50,11 +48,13 @@ while ($i -lt $args.Count) {
     }
     $i++
 }
-if ([string]::IsNullOrWhiteSpace($Command)) { Die "missing command (up|down|status|logs)" }
+if ($LogsName -eq "research") { $LogsName = "frontend" }
+if ($LogsName -eq "research-build") { $LogsName = "frontend-build" }
+if ($LogsName -notin @("engine", "frontend", "frontend-build")) { Die "unknown log: $LogsName" }
 
 function PidAlive($pidfile) {
     if (!(Test-Path $pidfile)) { return $false }
-    $procPid = (Get-Content $pidfile -ErrorAction SilentlyContinue | Select-Object -First 1).ToString().Trim()
+    $procPid = ([string](Get-Content $pidfile -ErrorAction SilentlyContinue | Select-Object -First 1)).Trim()
     if ([string]::IsNullOrWhiteSpace($procPid)) { return $false }
     $p = Get-Process -Id $procPid -ErrorAction SilentlyContinue
     return ($null -ne $p)
@@ -76,143 +76,120 @@ function Start-Bg($name, $dir, $cmd) {
         Ok "$name started (pid $(Get-Content $pidfile), log .run/logs/$name.log)"
     } else {
         Warn "$name exited immediately - last lines:"
-        if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { "    $_" } }
+        if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { Say "    $_" } }
         return 1
     }
     return 0
 }
 
-function Wait-For($url, $limit, $label) {
-    $waited = 0
-    while ($true) {
-        & curl.exe -fsS -m 2 $url 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { Ok "$label is up: $url"; return $true }
-        $waited++
-        if ($waited -ge $limit) { Warn "$label did not answer $url within ${limit}s"; return $false }
-        Start-Sleep -Seconds 1
-    }
+function Test-Health($url) {
+    try {
+        $body = Invoke-RestMethod -Uri $url -TimeoutSec 2 -ErrorAction Stop
+        if ($url -eq $FrontendHealth) { return ($body.adapter -eq $true -and $body.engine -eq $true) }
+        return ($body.status -eq "ok")
+    } catch { return $false }
 }
 
-function Ensure-Venv {
-    if (!(Test-Path $Python)) { Die "python not found: $Python" }
-    & $Python -c "import fastapi, rasterio, sklearn, lightgbm" 2>$null
+function Wait-For($url, $limit, $label) {
+    $deadline = (Get-Date).AddSeconds($limit)
+    do {
+        if (Test-Health $url) { Ok "$label is up: $url"; return $true }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Ensure-Python {
+    if (-not $env:WBALC_PYTHON -and !(Test-Path -LiteralPath $Python -PathType Leaf)) {
+        if (!(Get-Command python.exe -ErrorAction SilentlyContinue)) { Die "Python is required; install it or set WBALC_PYTHON to an interpreter path" }
+        & python.exe -m venv (Join-Path $Root ".venv")
+        if ($LASTEXITCODE -ne 0) { Die "Could not create .venv" }
+    }
+    $interpreter = Get-Command $Python -CommandType Application -ErrorAction SilentlyContinue
+    if (!$interpreter) { Die "Python not found: $Python" }
+    $script:Python = $interpreter.Source
+    & $Python -c "import uvicorn, fastapi, rasterio, sklearn, lightgbm, sqlalchemy" 2>$null
     if ($LASTEXITCODE -ne 0) {
-        Say "installing python requirements (first run only)"
-        & $Python -m pip install -q -r (Join-Path $Root "requirements.txt")
+        Say "installing Python requirements"
+        & $Python -m pip install -r (Join-Path $Root "requirements.txt")
+        if ($LASTEXITCODE -ne 0) { Die "Python dependencies could not be installed; use a Python version supported by the requirements or set WBALC_PYTHON" }
     }
 }
 
 function Ensure-Node($dir) {
-    if (!(Get-Command npm -ErrorAction SilentlyContinue)) { Die "npm is required for the UI services" }
-    if (!(Test-Path (Join-Path $dir "node_modules")) -or !(Test-Path (Join-Path $dir "node_modules\.bin"))) {
-        Say "installing node modules in $($dir.Substring($Root.Length+1))"
+    if (!(Get-Command node.exe -ErrorAction SilentlyContinue) -or !(Get-Command npm.cmd -ErrorAction SilentlyContinue)) { Die "Node.js and npm are required for the workspace" }
+    $nodeVersion = & node.exe --version
+    $packageHash = (Get-FileHash (Join-Path $dir "package.json")).Hash
+    $lockHash = (Get-FileHash (Join-Path $dir "package-lock.json")).Hash
+    $fingerprint = "$nodeVersion $packageHash $lockHash"
+    $stamp = Join-Path $dir "node_modules\.wbalc-deps-windows"
+    $previous = Get-Content -LiteralPath $stamp -ErrorAction SilentlyContinue
+    if ($previous -ne $fingerprint) {
+        Say "synchronizing locked dependencies in frontend/"
         Push-Location $dir
-        & npm ci --no-audit --no-fund *>$null
-        if ($LASTEXITCODE -ne 0) { & npm install --no-audit --no-fund *>$null }
-        Pop-Location
+        try {
+            & npm.cmd ci --include=dev --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { Die "frontend dependency installation failed" }
+            Set-Content -LiteralPath $stamp -Value $fingerprint -ErrorAction Stop
+        } finally { Pop-Location }
     }
 }
 
 function Cmd-Up {
+    foreach ($port in @($ApiPort, $FrontendPort)) {
+        if ($port -notmatch '^[0-9]{1,5}$' -or [int]$port -lt 1 -or [int]$port -gt 65535) { Die "Invalid port: $port" }
+    }
     New-Item -ItemType Directory -Force -Path $RunDir, $LogDir | Out-Null
-
-    # ---- engine ----
-    & curl.exe -fsS -m 1 "http://localhost:$ApiPort/health" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-Health $EngineHealth) {
         Ok "engine already answering on :$ApiPort (reusing it)"
     } else {
-        Ensure-Venv
+        Ensure-Python
         Say "starting engine on :$ApiPort"
-        if ($DevMode -eq 1) {
-            Start-Bg engine $Root "$Python -m uvicorn app.main:app --host 0.0.0.0 --port $ApiPort --reload" | Out-Null
-        } else {
-            Start-Bg engine $Root "$Python -m uvicorn app.main:app --host 0.0.0.0 --port $ApiPort" | Out-Null
+        $reload = if ($DevMode) { " --reload" } else { "" }
+        if ((Start-Bg engine $Root "`"$Python`" -m uvicorn app.main:app --host 0.0.0.0 --port $ApiPort$reload") -ne 0 -or !(Wait-For $EngineHealth 45 "engine")) {
+            Die "engine failed to start: see .run/logs/engine.log"
         }
-        $ok = Wait-For "http://localhost:$ApiPort/health" 45 "engine"
-        if (-not $ok) { Die "engine failed to start: see .run/logs/engine.log" }
     }
 
-    # ---- next.js UI ----
-    if ($NextUi -eq 1) {
-        & curl.exe -fsS -m 1 "http://localhost:$FrontendPort/" 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Ok "Next.js workspace already answering on :$FrontendPort (reusing it)"
+    if ($Frontend) {
+        if (Test-Health $FrontendHealth) {
+            if ($Rebuild) { Die "Workspace already running. Run down before rebuilding." }
+            Ok "SvelteKit workspace already answering on :$FrontendPort (reusing it)"
         } else {
-            Ensure-Node (Join-Path $Root "frontend")
-            $standalone = Join-Path $Root "frontend\.next\standalone"
-            $standaloneServer = Join-Path $standalone "server.js"
-            if ($Rebuild -eq 1 -or !(Test-Path $standaloneServer)) {
-                Say "building Next.js workspace"
+            Ensure-Node $FrontendDir
+            $common = "set `"RSAL_API_URL=http://127.0.0.1:$ApiPort`" && set `"PORT=$FrontendPort`""
+            if ($DevMode) {
+                $cmd = "$common && npm.cmd run dev -- --port $FrontendPort --strictPort"
+            } else {
+                Say "building SvelteKit workspace"
                 $buildLog = Join-Path $LogDir "frontend-build.log"
-                $env:BUILD_STANDALONE = "1"
-                Push-Location (Join-Path $Root "frontend")
-                & npm run build -- --webpack > $buildLog 2>&1
-                $bexit = $LASTEXITCODE
-                Pop-Location
-                Remove-Item Env:BUILD_STANDALONE -ErrorAction SilentlyContinue
-                if ($bexit -ne 0) { Die "Next.js build failed: see .run/logs/frontend-build.log" }
-                $staticSrc = Join-Path $Root "frontend\.next\static"
-                $staticDst = Join-Path $standalone ".next\static"
-                if (Test-Path $staticSrc) { Copy-Item -Recurse -Force $staticSrc $staticDst -ErrorAction SilentlyContinue }
-                $pubSrc = Join-Path $Root "frontend\public"
-                $pubDst = Join-Path $standalone "public"
-                if (Test-Path $pubSrc) { Copy-Item -Recurse -Force $pubSrc $pubDst -ErrorAction SilentlyContinue }
-            } else {
-                Say "frontend build exists, skipping (use --rebuild to rebuild)"
+                Push-Location $FrontendDir
+                try {
+                    & npm.cmd run build > $buildLog 2>&1
+                    if ($LASTEXITCODE -ne 0) { Die "SvelteKit build failed: see .run/logs/frontend-build.log" }
+                } finally { Pop-Location }
+                $origin = if ($env:ORIGIN) { $env:ORIGIN } else { "http://localhost:$FrontendPort" }
+                $bodyLimit = if ($env:BODY_SIZE_LIMIT) { $env:BODY_SIZE_LIMIT } else { "545259520" }
+                $cmd = "$common && set `"HOST=0.0.0.0`" && set `"ORIGIN=$origin`" && set `"BODY_SIZE_LIMIT=$bodyLimit`" && node.exe build"
             }
-            $standalone = Join-Path $Root "frontend\.next\standalone"
-            $cmd = "set `"PORT=$FrontendPort`" && set `"HOSTNAME=0.0.0.0`" && set `"NODE_ENV=production`" && set `"RSAL_API_URL=http://localhost:$ApiPort`" && node server.js"
-            Start-Bg frontend $standalone $cmd | Out-Null
-            Wait-For "http://localhost:$FrontendPort/" 60 "Next.js workspace" | Out-Null
-        }
-    }
-
-    # ---- research workspace ----
-    if ($ResearchUi -eq 1) {
-        & curl.exe -fsS -m 1 "http://localhost:$ResearchPort/" 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            Ok "research workspace already answering on :$ResearchPort (reusing it)"
-        } else {
-            $dir = Join-Path $Root "examples\wbalc-geospatial-research-interface"
-            Ensure-Node $dir
-            if ($DevMode -eq 1) {
-                $cmd = "set `"RSAL_API_URL=http://localhost:$ApiPort`" && set `"PORT=$ResearchPort`" && npx.cmd vite dev --host 0.0.0.0 --port $ResearchPort"
-                Start-Bg research $dir $cmd | Out-Null
-                Wait-For "http://localhost:$ResearchPort/" 60 "research workspace" | Out-Null
-            } else {
-                $researchBuild = Join-Path $dir "build"
-                if ($Rebuild -eq 1 -or !(Test-Path (Join-Path $researchBuild "index.js"))) {
-                    Say "building research workspace"
-                    $rbuildLog = Join-Path $LogDir "research-build.log"
-                    Push-Location $dir
-                    & npm run build > $rbuildLog 2>&1
-                    $rexit = $LASTEXITCODE
-                    Pop-Location
-                    if ($rexit -ne 0) { Die "research workspace build failed: see .run/logs/research-build.log" }
-                } else {
-                    Say "research build exists, skipping (use --rebuild to rebuild)"
-                }
-                $cmd = "set `"RSAL_API_URL=http://localhost:$ApiPort`" && set `"PORT=$ResearchPort`" && set `"HOST=0.0.0.0`" && node build"
-                Start-Bg research $dir $cmd | Out-Null
-                Wait-For "http://localhost:$ResearchPort/" 60 "research workspace" | Out-Null
+            if ((Start-Bg frontend $FrontendDir $cmd) -ne 0 -or !(Wait-For $FrontendHealth 60 "SvelteKit workspace")) {
+                Die "workspace failed to start or reach the engine: see .run/logs/frontend.log"
             }
         }
     }
 
     Say ""
     Say "  engine     http://localhost:$ApiPort/docs"
-    if ($NextUi -eq 1) { Say "  workspace  http://localhost:$FrontendPort" }
-    if ($ResearchUi -eq 1) { Say "  research   http://localhost:$ResearchPort" }
-    Say ""
-    Say "logs:  .\scripts\up.ps1 logs [engine|frontend|research]"
-    Say "stop:  .\scripts\up.ps1 down"
+    if ($Frontend) { Say "  workspace  http://localhost:$FrontendPort" }
+    Say 'logs:  .\scripts\up.ps1 logs [engine|frontend|frontend-build]'
+    Say 'stop:  .\scripts\up.ps1 down'
 }
 
 function Cmd-Down {
     $found = $false
     Get-ChildItem (Join-Path $RunDir "*.pid") -ErrorAction SilentlyContinue | ForEach-Object {
         $name = $_.BaseName
-        $procPid = (Get-Content $_.FullName -ErrorAction SilentlyContinue | Select-Object -First 1).ToString().Trim()
+        $procPid = ([string](Get-Content $_.FullName -ErrorAction SilentlyContinue | Select-Object -First 1)).Trim()
         if ($procPid -and (Get-Process -Id $procPid -ErrorAction SilentlyContinue)) {
             & taskkill /T /F /PID $procPid 2>$null | Out-Null
             Ok "stopped $name (pid $procPid)"
@@ -223,21 +200,13 @@ function Cmd-Down {
         Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
     }
     if (-not $found) { Warn "nothing to stop (no live pid files in .run/)" }
-    & curl.exe -fsS -m 1 "http://localhost:$ApiPort/health" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Warn "something is still serving :$ApiPort - it was not started by this script" }
+    if (Test-Health $EngineHealth) { Warn "something is still serving :$ApiPort - it was not started by this script" }
 }
 
 function Cmd-Status {
     Say ""
-    & curl.exe -fsS -m 2 "http://localhost:$ApiPort/health" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        $h = & curl.exe -fsS -m 2 "http://localhost:$ApiPort/health" 2>$null
-        Ok "engine    :$ApiPort  $h"
-    } else { Warn "engine    :$ApiPort  down" }
-    & curl.exe -fsS -m 2 "http://localhost:$FrontendPort/" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Ok "workspace :$FrontendPort  up" } else { Warn "workspace :$FrontendPort  down" }
-    & curl.exe -fsS -m 2 "http://localhost:$ResearchPort/" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { Ok "research  :$ResearchPort  up" } else { Warn "research  :$ResearchPort  down" }
+    if (Test-Health $EngineHealth) { Ok "engine    :$ApiPort  up" } else { Warn "engine    :$ApiPort  down" }
+    if (Test-Health $FrontendHealth) { Ok "workspace :$FrontendPort  up" } else { Warn "workspace :$FrontendPort  down or disconnected" }
     Say ""
     if (Test-Path $RunDir) {
         $pids = Get-ChildItem (Join-Path $RunDir "*.pid") -ErrorAction SilentlyContinue
