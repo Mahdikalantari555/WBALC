@@ -486,13 +486,13 @@
 </div>
 
 <style>
-  .connection-error { display: flex; gap: 14px; align-items: flex-start; padding: 18px; border: 1px solid #7a4a3a; border-radius: 8px; background: #241a19; color: #f4d3c4; }
-  .connection-error strong { color: #ffd9c9; font-size: 14px; }
+  .connection-error { display: flex; gap: 14px; align-items: flex-start; padding: 18px; border: 1px solid var(--control-border); border-radius: 8px; background: var(--control-bg); color: var(--danger-fg); }
+  .connection-error strong { color: var(--danger-fg); font-size: 14px; }
   .connection-error p { margin: 4px 0 0; font-size: 12px; line-height: 1.6; }
-  .connection-error .hint { color: #c9a99a; }
+  .connection-error .hint { color: var(--danger-fg); }
   .connection-error .button { margin-inline-start: auto; }
   .boot-state { display: flex; align-items: center; gap: 9px; justify-content: center; min-height: 220px; color: var(--muted); font-size: 12.5px; }
-  .spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid #35485a; border-top-color: var(--accent); animation: spin 700ms linear infinite; }
+  .spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid var(--control-border); border-top-color: var(--accent); animation: spin 700ms linear infinite; }
   .status-dot.offline { background: var(--warn); box-shadow: 0 0 0 3px #f3be6717; }
   .locale-slot { display: none; }
   .dataset-label { max-width: 148px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

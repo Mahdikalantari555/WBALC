@@ -42,6 +42,28 @@ npx vite build                                     # adapter-node
 - **Migration**: additive versions 1…10, verified against a legacy RSAL-style database; project deletion
   now cascades Phase 3–5 records instead of orphaning them.
 
+## Design system (applied after Phase 5)
+
+The research-workspace frontend now has a shadcn-structured primitive layer
+(`components.json`, `$lib/utils` with `cn()`, `src/lib/components/ui/<name>/`),
+and the drift it was meant to prevent is checked rather than trusted:
+
+| Before | After |
+| --- | --- |
+| 79 hex colours in `index.css` + 150 hard-coded across components | one oklch token layer; **0** hex values in `.svelte` files |
+| `.button` / `.button.primary` / `.button.quiet` / `.button.small` at 33 call sites | `Button` with `variant`/`size` |
+| `inline-error` blocks hand-rolled per page | `Alert` (one shape, one role, one icon) |
+| 9 labels below 10px | nothing below 10px, enforced by a test |
+| placeholder-only inputs with no accessible name | `aria-label`/`id` + `for`, enforced by a test |
+| dead `AsyncState.svelte` (0 importers) | removed |
+| `--destructive` text at 4.42:1 on cards (under AA) | 4.98:1; the whole text/surface matrix is asserted |
+
+`src/lib/components/ui/design-system.test.ts` runs 27 assertions including a
+computed WCAG contrast table (`contrast.ts`), so the palette cannot regress
+silently. **No light theme ships**: the map/raster chrome still assumes a dark
+surface, and a half-themed app is worse than a dark-only one. That is recorded as
+an explicit non-claim, not an oversight.
+
 ## What is NOT complete — read this before quoting any number
 
 1. **No real satellite imagery and no independent reference data exist in this repository.** Every metric

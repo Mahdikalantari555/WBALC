@@ -198,15 +198,15 @@
   .model-picker-bar { display: flex; gap: 12px 19px; align-items: end; flex-wrap: wrap; padding: 13px 15px; margin-bottom: 15px; }
   .picker { display: flex; align-items: end; gap: 8px; min-width: min(240px, 100%); }
   .picker :global(.field) { flex: 1; }
-  .arena-letter { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; margin-bottom: 6px; border-radius: 4px; border: 1px solid #426967; background: #1c3c42; color: #a3eee0; font: 11px var(--mono); }
-  .arena-letter.second { background: #273152; border-color: #566088; color: #c5d6ff; }
+  .arena-letter { display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; margin-bottom: 6px; border-radius: 4px; border: 1px solid var(--control-border); background: var(--control-bg); color: var(--accent); font: 11px var(--mono); }
+  .arena-letter.second { background: var(--control-border); border-color: var(--control-border); color: var(--info); }
   .inspect-control { display: grid; gap: 6px; margin-inline-start: auto; }
   .single-note { margin: -6px 0 13px; color: var(--warn); font-size: 11px; }
   .arena-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 15px; align-items: start; margin-top: 15px; margin-bottom: 15px; }
   .model-name { display: inline-flex; font-weight: 560; align-items: center; gap: 7px; padding: 2px 0; white-space: nowrap; }
   .model-name:hover { text-decoration: underline; color: var(--accent); }
-  .model-letter { display: grid; place-items: center; width: 16px; height: 16px; font: 10px var(--mono); border: 1px solid #456f6d; color: #a2eedf; background: #19383c; border-radius: 4px; }
-  .model-letter.second { background: #283152; border-color: #505b86; color: #cbd6ff; }
+  .model-letter { display: grid; place-items: center; width: 16px; height: 16px; font: 10px var(--mono); border: 1px solid var(--control-border); color: var(--accent); background: var(--control-bg); border-radius: 4px; }
+  .model-letter.second { background: var(--control-border); border-color: var(--control-border); color: var(--info); }
   .insufficient { margin: 8px 0 0; color: var(--warn); font-size: 11px; }
   @media (max-width: 1150px) {
     .arena-top { grid-template-columns: minmax(0, 1fr); }

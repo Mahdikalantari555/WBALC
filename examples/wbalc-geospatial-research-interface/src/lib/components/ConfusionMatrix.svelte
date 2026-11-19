@@ -69,14 +69,14 @@
 </section>
 
 <style>
-  .matrix-axis { color: var(--faint); text-align: right; padding-inline-end: 13%; font: 9px var(--mono); letter-spacing: .05em; text-transform: uppercase; }
+  .matrix-axis { color: var(--faint); text-align: right; padding-inline-end: 13%; font: 10px var(--mono); letter-spacing: .05em; text-transform: uppercase; }
   .matrix-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 4px; margin-inline: -4px; width: calc(100% + 8px); }
   .matrix-table th { color: var(--muted); text-align: start; font-size: 10px; font-weight: 550; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .matrix-table th:first-child { width: 30%; }
   .matrix-table thead th:not(:first-child) { text-align: center; }
-  .matrix-table td { font: 11.5px/1 var(--mono); color: #f3d8b2; text-align: center; border: 1px solid #354359; height: 39px; border-radius: 4px; background: color-mix(in srgb, #9b572e var(--heat), #172336); }
-  .matrix-table td.diagonal { color: #e1faf2; border-color: #365d60; background: color-mix(in srgb, #30887f var(--heat), #152336); }
+  .matrix-table td { font: 11.5px/1 var(--mono); color: var(--warn); text-align: center; border: 1px solid var(--control-border); height: 39px; border-radius: 4px; background: color-mix(in srgb, var(--danger) var(--heat), var(--control-bg)); }
+  .matrix-table td.diagonal { color: var(--ink); border-color: var(--control-border); background: color-mix(in srgb, var(--control-border) var(--heat), var(--control-bg)); }
   .matrix-table .class-dot { width: 6px; height: 6px; }
-  .matrix-table .deemphasized td { color: #acb8c8; background: #162235; border-color: #2b394c; }
+  .matrix-table .deemphasized td { color: var(--muted); background: var(--control-bg); border-color: var(--control-border); }
   .matrix-note { color: var(--faint); font-size: 10.5px; margin: 8px 0 0; }
 </style>
