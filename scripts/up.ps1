@@ -16,7 +16,7 @@ $FrontendPort = if ($env:FRONTEND_PORT) { $env:FRONTEND_PORT } else { "3000" }
 $FrontendDir = Join-Path $Root "frontend"
 $EngineHealth = "http://localhost:$ApiPort/health"
 $FrontendHealth = "http://localhost:$FrontendPort/api/health"
-$Python = if ($env:WBALC_PYTHON) { $env:WBALC_PYTHON } else { Join-Path $Root ".venv\Scripts\python.exe" }
+$EngineIdentity = Join-Path $RunDir "engine-python.txt"
 
 function Say($m) { Write-Host $m }
 function Ok($m) { Write-Host "[OK] $m" -ForegroundColor Green }
@@ -99,20 +99,19 @@ function Wait-For($url, $limit, $label) {
     return $false
 }
 
-function Ensure-Python {
-    if (-not $env:WBALC_PYTHON -and !(Test-Path -LiteralPath $Python -PathType Leaf)) {
-        if (!(Get-Command python.exe -ErrorAction SilentlyContinue)) { Die "Python is required; install it or set WBALC_PYTHON to an interpreter path" }
-        & python.exe -m venv (Join-Path $Root ".venv")
-        if ($LASTEXITCODE -ne 0) { Die "Could not create .venv" }
+function Resolve-GeoPython {
+    if ($env:CONDA_DEFAULT_ENV -ne "geo" -or -not $env:CONDA_PREFIX) {
+        Die "Activate the required Conda environment first: conda activate geo"
     }
-    $interpreter = Get-Command $Python -CommandType Application -ErrorAction SilentlyContinue
-    if (!$interpreter) { Die "Python not found: $Python" }
-    $script:Python = $interpreter.Source
-    & $Python -c "import uvicorn, fastapi, rasterio, sklearn, lightgbm, sqlalchemy" 2>$null
+    $python = Join-Path $env:CONDA_PREFIX "python.exe"
+    if (!(Test-Path -LiteralPath $python -PathType Leaf)) { Die "geo Python not found: $python" }
+    return $python
+}
+
+function Test-PythonDependencies($python) {
+    & $python -c "import uvicorn, fastapi, rasterio, sklearn, lightgbm, sqlalchemy, aiosqlite, pydantic_settings, multipart, PIL, joblib"
     if ($LASTEXITCODE -ne 0) {
-        Say "installing Python requirements"
-        & $Python -m pip install -r (Join-Path $Root "requirements.txt")
-        if ($LASTEXITCODE -ne 0) { Die "Python dependencies could not be installed; use a Python version supported by the requirements or set WBALC_PYTHON" }
+        Die 'Missing or broken dependencies in geo. Install the requirements explicitly with: python -m pip install -r requirements.txt'
     }
 }
 
@@ -139,16 +138,24 @@ function Cmd-Up {
     foreach ($port in @($ApiPort, $FrontendPort)) {
         if ($port -notmatch '^[0-9]{1,5}$' -or [int]$port -lt 1 -or [int]$port -gt 65535) { Die "Invalid port: $port" }
     }
+    $Python = Resolve-GeoPython
+    $enginePidFile = Join-Path $RunDir "engine.pid"
     New-Item -ItemType Directory -Force -Path $RunDir, $LogDir | Out-Null
     if (Test-Health $EngineHealth) {
-        Ok "engine already answering on :$ApiPort (reusing it)"
+        if (!(PidAlive $enginePidFile) -or (Get-Content -LiteralPath $EngineIdentity -Raw -ErrorAction SilentlyContinue) -ne "$((Get-Content $enginePidFile))|$ApiPort|$Python") {
+            Die "Cannot verify that the engine on :$ApiPort uses geo. Stop it (use up.ps1 down if launcher-managed), then retry."
+        }
+        Ok "engine already answering on :$ApiPort (using geo)"
     } else {
-        Ensure-Python
+        if (PidAlive $enginePidFile) { Die "A previous engine is still running. Run up.ps1 down before restarting." }
+        Test-PythonDependencies $Python
+        Say "using Conda geo Python: $Python"
         Say "starting engine on :$ApiPort"
         $reload = if ($DevMode) { " --reload" } else { "" }
         if ((Start-Bg engine $Root "`"$Python`" -m uvicorn app.main:app --host 0.0.0.0 --port $ApiPort$reload") -ne 0 -or !(Wait-For $EngineHealth 45 "engine")) {
             Die "engine failed to start: see .run/logs/engine.log"
         }
+        Set-Content -LiteralPath $EngineIdentity -Value "$((Get-Content $enginePidFile))|$ApiPort|$Python" -NoNewline -ErrorAction Stop
     }
 
     if ($Frontend) {
@@ -199,6 +206,7 @@ function Cmd-Down {
         }
         Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
     }
+    Remove-Item -LiteralPath $EngineIdentity -Force -ErrorAction SilentlyContinue
     if (-not $found) { Warn "nothing to stop (no live pid files in .run/)" }
     if (Test-Health $EngineHealth) { Warn "something is still serving :$ApiPort - it was not started by this script" }
 }
