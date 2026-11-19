@@ -8,7 +8,8 @@
   import { classColor } from '../palette';
   import { getWorkspace, type MapLayer, type Selection } from '../state.svelte';
   import { useT } from '../t.svelte';
-  import type { DatasetView, MapFieldView } from '../types';
+  import type { DatasetView, MapFieldView, SceneView } from '../types';
+  import { sameNativeGrid } from '../map-inspection';
   import { assessGeoreferencing } from '../geo';
 
   const workspace = getWorkspace();
@@ -16,8 +17,7 @@
 
   const scene = $derived(workspace.scenes.find(candidate => workspace.mapScene?.projectId === workspace.project?.id && candidate.id === workspace.mapScene?.id) ??
     (!workspace.dataset ? workspace.scenes[0] : undefined));
-  const dataset = $derived.by<DatasetView | null>(() => {
-    if (!scene) return workspace.dataset;
+  function sceneRaster(scene: SceneView): DatasetView {
     const geo = assessGeoreferencing({ crsCode: scene.crs, transform: scene.transform, width: scene.width, height: scene.height });
     return {
       id: `scene:${scene.id}`, projectId: scene.projectId, name: scene.sourceFilename,
@@ -28,7 +28,13 @@
       bandNames: scene.bandNames?.map(name => name ?? '') ?? null, bandSchemaDeclared: Boolean(scene.bandNames?.every(Boolean)),
       sensor: scene.sensor, patchGrid: null,
     };
-  });
+  }
+  const dataset = $derived(scene ? sceneRaster(scene) : workspace.dataset);
+  let compareId = $state('');
+  const compareCandidates = $derived(scene ? workspace.scenes.filter(other => other.id !== scene.id && other.acquisitionDateTime && scene.acquisitionDateTime &&
+    other.acquisitionDateTime.slice(0, 10) !== scene.acquisitionDateTime.slice(0, 10) && sameNativeGrid(scene, other)) : []);
+  const compareScene = $derived(compareCandidates.find(other => other.id === compareId));
+  const comparison = $derived(compareScene ? { raster: sceneRaster(compareScene), left: scene?.acquisitionDateTime?.slice(0, 10) ?? '', right: compareScene.acquisitionDateTime?.slice(0, 10) ?? '' } : null);
   const hard = $derived(scene ? null : workspace.field.hard as MapFieldView | null);
   const uncertainty = $derived(scene ? null : workspace.field.uncertainty as MapFieldView | null);
   const binaryField = $derived(scene ? null : workspace.field.binary as MapFieldView | null);
@@ -154,6 +160,7 @@
 {#if workspace.scenes.length}
   <label class="field raster-source">{t('layer.source')}
     <select class="select" value={scene?.id ?? ''} onchange={(event) => {
+      compareId = '';
       workspace.mapScene = event.currentTarget.value && workspace.project ? { projectId: workspace.project.id, id: event.currentTarget.value } : null;
       workspace.map.bandMode = 'true-color';
       workspace.map.layers.imagery = true;
@@ -167,6 +174,18 @@
   </label>
 {/if}
 
+{#if scene}
+  <label class="field raster-source">{t('inspection.compare')}
+    <select class="select" bind:value={compareId} disabled={!compareCandidates.length}>
+      <option value="">{t('inspection.noCompare')}</option>
+      {#each compareCandidates as other (other.id)}
+        <option value={other.id}>{other.acquisitionDateTime?.slice(0, 10)} · {other.sensor} · {other.sourceFilename}</option>
+      {/each}
+    </select>
+    {#if !compareCandidates.length}<small>{t('inspection.noMatch')}</small>{/if}
+  </label>
+{/if}
+
 {#if !dataset}
   <div class="surface">
     <EmptyState title={t('map.noDataset')} hint={t('map.noDatasetHint')} />
@@ -175,7 +194,7 @@
   <div class="map-workspace">
     <div class="stack">
       {#key dataset.id}
-        <InteractiveMap {dataset} {hard} {uncertainty} {binaryField} labels={scene ? [] : workspace.labels} onselect={select} />
+        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} labels={scene ? [] : workspace.labels} onselect={select} />
         <RasterLayers {dataset} imageryOnly={Boolean(scene)} />
       {/key}
 

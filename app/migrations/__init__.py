@@ -16,6 +16,8 @@ from .v008_scene_analysis import upgrade as upgrade_v8
 from .v009_research import upgrade as upgrade_v9
 from .v010_project_cascades import upgrade as upgrade_v10
 
+from .v011_label_undo import upgrade as upgrade_v11
+
 MIGRATIONS = [
     (1, upgrade_v1),
     (2, upgrade_v2),
@@ -27,6 +29,7 @@ MIGRATIONS = [
     (8, upgrade_v8),
     (9, upgrade_v9),
     (10, upgrade_v10),
+    (11, upgrade_v11),
 ]
 
 

@@ -13,6 +13,7 @@ export type BandMode = 'true-color' | 'false-color' | 'ndvi' | `band:${number}` 
 
 interface Handle {
   image: GeoTIFFImage;
+  mask: () => Promise<GeoTIFFImage | null>;
   stretch: Map<number, [number, number]>;
   stretchRequest?: Promise<Map<number, [number, number]>>;
 }
@@ -23,6 +24,19 @@ const HANDLE_CAP = 3;
 export function forgetRaster(datasetId?: string) {
   if (datasetId === undefined) handles.clear();
   else handles.delete(datasetId);
+}
+
+async function rasterHandle(tiff: Awaited<ReturnType<typeof fromUrl>>): Promise<Handle> {
+  const image = await tiff.getImage();
+  let cachedMask: Promise<GeoTIFFImage | null> | undefined;
+  return { image, stretch: new Map(), mask: () => cachedMask ??= (async () => {
+    const count = await tiff.getImageCount();
+    for (let index = 1; index < count; index++) {
+      const candidate = await tiff.getImage(index);
+      if ((candidate.fileDirectory.NewSubfileType & 4) && candidate.getWidth() === image.getWidth() && candidate.getHeight() === image.getHeight()) return candidate;
+    }
+    return null;
+  })() };
 }
 
 async function loadHandle(url: string, datasetId: string): Promise<Handle> {
@@ -36,13 +50,13 @@ async function loadHandle(url: string, datasetId: string): Promise<Handle> {
   const promise = (async () => {
     try {
       const tiff = await fromUrl(url, { allowFullFile: true, maxRanges: 4 });
-      return { image: await tiff.getImage(), stretch: new Map<number, [number, number]>() };
+      return await rasterHandle(tiff);
     } catch (error) {
       // A host without Range support still works: read the file once.
       const response = await fetch(url).catch(() => null);
       if (!response?.ok) throw error;
       const tiff = await fromArrayBuffer(await response.arrayBuffer());
-      return { image: await tiff.getImage(), stretch: new Map<number, [number, number]>() };
+      return await rasterHandle(tiff);
     }
   })();
   handles.set(datasetId, promise);
@@ -57,6 +71,26 @@ async function loadHandle(url: string, datasetId: string): Promise<Handle> {
     handles.delete(datasetId);
     throw error;
   }
+}
+
+export async function inspectRasterPixel(url: string, id: string, col: number, row: number, mode: BandMode, names?: string[] | null) {
+  const handle = await loadHandle(url, id);
+  const image = handle.image;
+  const bandCount = image.getSamplesPerPixel();
+  const view = channelsFor(mode, bandCount, names);
+  const samples = [...new Set(view.difference ? [view.nir, view.red] : view.channels)];
+  const window = [col, row, col + 1, row + 1];
+  const mask = await handle.mask();
+  const masked = mask ? Number((await mask.readRasters({ window, samples: [0], interleave: true }))[0]) === 0 : false;
+  const values = await image.readRasters({ window, samples, interleave: true });
+  const noData = image.getGDALNoData();
+  const bands = samples.map((band, index) => {
+    const value = Number(values[index]);
+    return { name: names?.[band] || `#${band + 1}`, value: masked || !Number.isFinite(value) || value === noData ? null : value };
+  });
+  const [a, b] = bands;
+  const index = view.difference && a?.value != null && b?.value != null && a.value + b.value !== 0 ? (a.value - b.value) / (a.value + b.value) : null;
+  return { bands, difference: view.difference, index };
 }
 
 /**

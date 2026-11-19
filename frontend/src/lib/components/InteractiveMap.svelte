@@ -1,15 +1,18 @@
 <script lang="ts">
+  import 'leaflet/dist/leaflet.css';
   import { onMount } from 'svelte';
   import { Crosshair, Droplets, Layers, Map as MapIcon, Maximize, Minimize, Minus, Plus, RotateCcw } from '@lucide/svelte';
   import { applyAffine, assessGeoreferencing, datasetBounds as wgsBounds, cellWindow, toWgs84 } from '$lib/geo';
   import { renderClassOverlay, renderUncertaintyOverlay, classColors, BINARY_COLORS, UNCERTAINTY_RAMP } from '$lib/palette';
-  import { channelsFor, renderRaster, type BandMode } from '$lib/raster';
+  import { sourcePixel } from '$lib/map-inspection';
+  import { channelsFor, inspectRasterPixel, renderRaster, type BandMode } from '$lib/raster';
   import { getWorkspace, type Selection } from '$lib/state.svelte';
   import { useT } from '$lib/t.svelte';
   import type { DatasetView, LabelView, MapFieldView } from '$lib/types';
 
   let {
     dataset,
+    comparison = null,
     hard,
     uncertainty,
     binaryField,
@@ -17,6 +20,7 @@
     onselect,
   }: {
     dataset: DatasetView;
+    comparison?: { raster: DatasetView; left: string; right: string } | null;
     hard: MapFieldView | null;
     uncertainty: MapFieldView | null;
     binaryField: MapFieldView | null;
@@ -34,9 +38,57 @@
   let imageryLoading = $state(false);
   let pointer = $state<{ x: number; y: number } | null>(null);
 
+  const geo = $derived(
+    assessGeoreferencing({
+      crsCode: dataset.crs,
+      transform: dataset.transform,
+      width: dataset.width,
+      height: dataset.height,
+    }),
+  );
+
+  let split = $state(50);
+  let rightImage = $state<string | null>(null);
+  let rightError = $state(false);
+  let position = $state<{ x: number; y: number; side: 'left' | 'right' } | null>(null);
+  let probe = $state<Awaited<ReturnType<typeof inspectRasterPixel>> | null>(null);
+  let probeError = $state(false);
+  let probeBusy = $state(false);
+  const probeRaster = $derived(position?.side === 'right' && comparison ? comparison.raster : dataset);
+  const pixel = $derived(position ? sourcePixel({ crsCode: probeRaster.crs, transform: probeRaster.transform, width: probeRaster.width, height: probeRaster.height }, position.x, position.y, geo.mode === 'map') : null);
+  // Comparable named-band schemas can share a view; otherwise show each native default.
+  const matchingBands = $derived(Boolean(comparison && comparison.raster.bandNames && dataset.bandNames &&
+    comparison.raster.bandNames.length === dataset.bandNames.length && dataset.bandNames.every((name, index) => name && name === comparison?.raster.bandNames?.[index])));
+  const leftMode = $derived(comparison && !matchingBands ? 'true-color' : workspace.map.bandMode);
+  const rightMode = $derived(matchingBands ? workspace.map.bandMode : 'true-color');
+  $effect(() => {
+    const right = comparison?.raster;
+    const mode = rightMode;
+    let active = true;
+    rightImage = null; rightError = false; position = null;
+    if (right) renderRaster(right.url, right.id, mode, 1400, right.bandNames)
+      .then(url => { if (active) rightImage = url; })
+      .catch(() => { if (active) rightError = true; });
+    return () => { active = false; };
+  });
+  $effect(() => {
+    const raster = probeRaster;
+    const mode = position?.side === 'right' && comparison ? rightMode : leftMode;
+    const point = pixel;
+    let active = true;
+    probe = null; probeError = false; probeBusy = Boolean(point);
+    if (point) inspectRasterPixel(raster.url, raster.id, point.col, point.row, mode, raster.bandNames)
+      .then(value => { if (active) probe = value; })
+      .catch(() => { if (active) probeError = true; })
+      .finally(() => { if (active) probeBusy = false; });
+    return () => { active = false; };
+  });
+
   // Leaflet is imported lazily so the map library stays out of the first paint.
   let runtime = $state.raw<null | {
     setImagery: (url: string | null) => void;
+    setRight: (url: string | null) => void;
+    setSplit: (value: number) => void;
     setClass: (url: string | null) => void;
     setUncertainty: (url: string | null) => void;
     setLabels: (labels: LabelView[]) => void;
@@ -47,18 +99,9 @@
   }>(null);
   let mapFailed = $state(false);
 
-  const geo = $derived(
-    assessGeoreferencing({
-      crsCode: dataset.crs,
-      transform: dataset.transform,
-      width: dataset.width,
-      height: dataset.height,
-    }),
-  );
-
   const activeView = $derived.by(() => {
     if (!workspace.map.layers.imagery) return t('ux.imageryOff');
-    const mode = workspace.map.bandMode;
+    const mode = leftMode;
     const recipe = workspace.activeRecipe;
     if (recipe?.raster === `wbalc:layers:${workspace.project?.id}:${dataset.id}:${dataset.contentSha256 ?? dataset.createdAt}` && recipe.mode === mode) return t('ux.preview', { name: recipe.name });
     if (mode === 'ndvi') return t('ux.preview', { name: t('map.band.ndvi') });
@@ -72,7 +115,7 @@
   /** Ignore stale reads when users flip bands rapidly or navigate away. */
   $effect(() => {
     const d = dataset;
-    const mode = workspace.map.bandMode;
+    const mode = leftMode;
     let active = true;
     imageryLoading = true;
     imageryError = null;
@@ -116,8 +159,10 @@
   });
 
   $effect(() => {
-    runtime?.setImagery(imagery);
+    runtime?.setImagery(workspace.map.layers.imagery ? imagery : null);
   });
+  $effect(() => { runtime?.setRight(comparison && workspace.map.layers.imagery ? rightImage : null); });
+  $effect(() => { runtime?.setSplit(split); });
   $effect(() => {
     runtime?.setClass(workspace.map.layers.classification ? classOverlay : null);
   });
@@ -195,6 +240,10 @@
     const uncertaintyPane = pane('wbalc-uncertainty', 250);
     const labelPane = pane('wbalc-labels', 280, true);
 
+    const rightPane = pane('wbalc-compare-right', 211);
+    let rightLayer: import('leaflet').ImageOverlay | null = null;
+    const splitLine = L.polyline([], { pane: rightPane, color: 'var(--ink)', weight: 2, opacity: 0.9, interactive: false }).addTo(map);
+    let boundary = 50;
     let imageryLayer: import('leaflet').ImageOverlay | null = null;
     let classLayer: import('leaflet').ImageOverlay | null = null;
     let uncertaintyLayer: import('leaflet').ImageOverlay | null = null;
@@ -217,7 +266,28 @@
       }
       if (!url) return;
       imageryLayer = overlay(url, 1, imageryPane).addTo(map);
+      applySplit();
     }
+
+    function applySplit() {
+      const left = imageryLayer?.getElement();
+      const right = rightLayer?.getElement();
+      if (left) left.style.clipPath = right ? `inset(0 ${100 - boundary}% 0 0)` : '';
+      if (right) right.style.clipPath = `inset(0 0 0 ${boundary}%)`;
+      const longitude = bounds.getWest() + (bounds.getEast() - bounds.getWest()) * boundary / 100;
+      splitLine.setLatLngs(left && right && boundary > 0 && boundary < 100 ? [[bounds.getSouth(), longitude], [bounds.getNorth(), longitude]] : []);
+    }
+    function setRight(url: string | null) {
+      if (rightLayer) map.removeLayer(rightLayer);
+      rightLayer = url ? overlay(url, 1, rightPane).addTo(map) : null;
+      applySplit();
+    }
+    map.on('click', (event: import('leaflet').LeafletMouseEvent) => {
+      if (!workspace.map.layers.imagery) return;
+      const rect = rightLayer?.getElement()?.getBoundingClientRect();
+      const side = rect && event.originalEvent.clientX >= rect.left + rect.width * boundary / 100 ? 'right' : 'left';
+      position = { x: event.latlng.lng, y: event.latlng.lat, side };
+    });
 
     function setClass(url: string | null) {
       if (classLayer) {
@@ -349,6 +419,8 @@
 
     return {
       setImagery,
+      setRight,
+      setSplit: (value: number) => { boundary = value; applySplit(); },
       setClass,
       setUncertainty,
       setLabels,
@@ -382,7 +454,7 @@
     <span class="badge-live">{dataset.name}</span>
     <div class="map-bar-actions">
       <div class="segments" role="group" aria-label={t('map.bandMode')}>
-        {#each ([['true-color', t('map.band.trueColor')], ['false-color', t('map.band.falseColor')], ['ndvi', t('map.band.ndvi')]] as [BandMode, string][]).filter(([mode]) => new Set(channelsFor(mode, dataset.bands, dataset.bandNames).channels).size > 1) as [value, label]}
+        {#each ((comparison && !matchingBands ? [] : [['true-color', t('map.band.trueColor')], ['false-color', t('map.band.falseColor')], ['ndvi', t('map.band.ndvi')]]) as [BandMode, string][]).filter(([mode]) => new Set(channelsFor(mode, dataset.bands, dataset.bandNames).channels).size > 1) as [value, label]}
           <button
             aria-pressed={workspace.map.bandMode === value}
             class:chosen={workspace.map.bandMode === value}
@@ -402,6 +474,20 @@
       >
     </div>
   </div>
+
+  {#if comparison}
+    <div class="compare-tools">
+      <label>{t('inspection.slider')}
+        <span class="compare-range" dir="ltr"><bdi>{comparison.left}</bdi><input type="range" min="0" max="100" bind:value={split} disabled={!rightImage || !workspace.map.layers.imagery} /><bdi>{comparison.right}</bdi></span>
+      </label>
+      {#if rightError}<p role="alert">{t('inspection.compareError')}</p>
+      {:else if !rightImage}<p role="status">{t('inspection.loading')}</p>
+      {:else}
+        {#if !matchingBands}<p>{t('inspection.nativeViews')}</p>{/if}
+        {#if !leftMode.startsWith('nd:') && leftMode !== 'ndvi'}<p>{t('inspection.stretch')}</p>{/if}
+      {/if}
+    </div>
+  {/if}
 
   <div class="map-canvas-wrap">
     <div class="map-canvas" bind:this={host}></div>
@@ -458,9 +544,29 @@
       {/if}
     </div>
   </div>
+  <div class="probe" role="status">
+    {#if !position}{t('inspection.hint')}
+    {:else if !pixel}{t('inspection.outside')}
+    {:else}
+      <bdi>{probeRaster.name} · {t('inspection.pixel', { col: pixel.col, row: pixel.row })}</bdi>
+      {#if geo.mode === 'map'}<bdi dir="ltr">{position.x.toFixed(6)}, {position.y.toFixed(6)} (WGS84)</bdi>{/if}
+      {#if probeBusy}<span>{t('inspection.loading')}</span>
+      {:else if probeError}<span>{t('inspection.readError')}</span>
+      {:else if probe}
+        {#each probe.bands as band}<bdi>{band.name}: {band.value === null ? t('inspection.noData') : band.value}</bdi>{/each}
+        {#if probe.difference}<bdi>{t('inspection.index')}: {probe.index === null ? t('inspection.noData') : probe.index.toFixed(5)}</bdi>{/if}
+      {/if}
+    {/if}
+  </div>
 </section>
 
 <style>
+  .compare-tools, .probe { padding: 8px 12px; border-block: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .compare-tools p { margin: 4px 0 0; }
+  .compare-range { display: flex; gap: 9px; align-items: center; margin-block-start: 4px; }
+  .compare-range input { flex: 1; min-width: 0; accent-color: var(--accent); }
+  .probe { display: flex; flex-wrap: wrap; gap: 5px 12px; overflow-wrap: anywhere; }
+
   .active-view { min-width: 0; overflow-wrap: anywhere; color: var(--accent); font-size: 12px; }
   .map-shell { overflow: hidden; display: flex; flex-direction: column; }
   .map-shell.expanded { position: fixed; inset: 14px; z-index: 400; margin: 0; }
@@ -471,8 +577,8 @@
   .map-bar-divider { width: 1px; height: 17px; background: var(--border); }
   .map-bar-actions { display: flex; align-items: center; gap: 7px; margin-inline-start: auto; }
   .map-canvas-wrap { position: relative; flex: 1; min-height: 0; }
-  .map-canvas { height: clamp(340px, 52vh, 620px); background: var(--plot-bg); }
-  .map-shell.expanded .map-canvas { height: calc(100vh - 120px); }
+  .map-canvas { isolation: isolate; height: clamp(340px, 52vh, 620px); background: var(--plot-bg); }
+  .map-shell.expanded .map-canvas { isolation: isolate; height: calc(100vh - 120px); }
   .map-controls { position: absolute; inset-block-start: 11px; inset-inline-start: 11px; display: grid; gap: 4px; z-index: 5; }
   .map-controls .icon-button { background: #0e1a29e6; border: 1px solid var(--control-border); width: 29px; height: 29px; }
   .map-notice { position: absolute; inset-block-start: 11px; inset-inline-end: 11px; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border-radius: 5px; background: #0e1a29ec; border: 1px solid var(--control-border); font-size: 11px; color: var(--muted); z-index: 6; max-width: 60%; }

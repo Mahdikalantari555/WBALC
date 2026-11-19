@@ -149,6 +149,9 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  undoLabel: (project: string, label: string) =>
+    request<{ restored_class: string | null; restored_query_class: string | null }>(`/api/projects/${enc(project)}/labels/${enc(label)}/undo`, { method: 'POST' }),
+
   /** Reproducibility record of one run (manifest, artifact, what is missing). */
   runLineage: (id: string, runId: string) =>
     request<RunLineageView>(`/api/projects/${enc(id)}/runs/${enc(runId)}/lineage`),

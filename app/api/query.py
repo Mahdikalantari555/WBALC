@@ -354,9 +354,16 @@ def _decision_counts(items: list[QueryItem]) -> dict[str, int]:
 async def _added_counts(session, project_id: int, batch_ids: list[int]) -> dict[int, int]:
     if not batch_ids:
         return {}
+    from sqlalchemy.orm import aliased
+
+    earlier = aliased(Label)
+    first_retained = ~select(earlier.id).where(
+        earlier.project_id == Label.project_id, earlier.sample_id == Label.sample_id,
+        earlier.version < Label.version, earlier.undone_at.is_(None),
+    ).exists()
     rows = await session.execute(
         select(Label.query_batch_id, func.count(Label.id)).where(
-            Label.project_id == project_id, Label.version == 1,
+            Label.project_id == project_id, first_retained, Label.undone_at.is_(None),
             Label.query_item_id.is_not(None), Label.query_batch_id.in_(batch_ids),
         ).group_by(Label.query_batch_id)
     )
@@ -446,7 +453,7 @@ async def decide_query_item(
     if payload.status == "labeled":
         from ..models import Label
 
-        query = select(Label).where(Label.project_id == project_id, Label.sample_id == item.sample_id)
+        query = select(Label).where(Label.project_id == project_id, Label.sample_id == item.sample_id, Label.undone_at.is_(None))
         if payload.label_id is not None:
             query = query.where(Label.id == payload.label_id)
         result = await session.execute(query.order_by(Label.version.desc()))

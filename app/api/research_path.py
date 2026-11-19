@@ -82,7 +82,11 @@ async def export_research_path(
         )).all()
 
     labels = await records(Label)
-    added = [label for label in labels if label.version == 1 and label.query_item_id is not None]
+    first_retained = {}
+    for label in sorted(labels, key=lambda entry: entry.version):
+        if label.undone_at is None:
+            first_retained.setdefault(label.sample_id, label)
+    added = [label for label in first_retained.values() if label.query_item_id is not None]
     counts = Counter(label.query_batch_id for label in added)
     batches = (await session.scalars(
         select(QueryBatch).where(QueryBatch.project_id == project_id)

@@ -333,6 +333,11 @@ class LabelBatchCreate(BaseModel):
     model_type: Literal["rf", "lightgbm"] = "rf"
 
 
+class LabelUndoOut(BaseModel):
+    restored_class: str | None
+    restored_query_class: str | None
+
+
 class LabelOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -351,6 +356,7 @@ class LabelOut(BaseModel):
     query_item_id: int | None = None
     # manual | query — reported, never inferred from anything but the stored link.
     provenance: str = "manual"
+    undone_at: datetime | None = None
     created_at: datetime
 
 

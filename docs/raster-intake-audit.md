@@ -35,3 +35,11 @@ survey/
 - This is not an official SAFE/XML/JP2 importer. Precise parsing of the user's actual tree remains open until a representative sample is available.
 - A single stack is submitted at a time, up to 32 single-band files and the server's configured per-request/raster size limits. No implicit reprojection, resolution harmonization, or application of scale/offset. Mixed native resolutions need upstream alignment. Retry is scoped to the current review session; re-opening a folder later is a new import.
 - Derived map recipes are browser-local per raster. They preview `(A−B)/(A+B)`; a zero denominator or invalid input is transparent. They are neither model inputs nor exported scientific index products yet.
+
+## Inspect and compare dates
+
+On the map, click an image to read the native zero-based column/row and raw band values. Georeferenced views also report WGS84 longitude and latitude. A derived preview reports its operands and index value. NoData values and internal TIFF masks are marked as missing, not zero.
+
+Select a dated scene, then use **Compare with another date** to select an acquisition on the same native grid. The divider keeps both sides at the same zoom and center. This is a visual swipe, not a change raster: each normal band preview uses its own contrast stretch. Use the pixel probe for numeric comparison.
+
+In **Active Learning**, **Undo last label** withdraws the current review view's latest submission. It restores the prior retained version if there is one, or reopens the associated suggestion. The withdrawn version and timestamp remain in label history and the research-path JSON. Existing trained models remain historical snapshots; retrain to use the updated labels.

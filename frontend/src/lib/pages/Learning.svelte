@@ -36,6 +36,8 @@
   let thumbnail = $state<string | null>(null);
   let thumbnailError = $state<string | null>(null);
   let submitting = $state(false);
+  let undoEntry = $state<{ project: string; label: string; sample: typeof sample; batch: string | null | undefined } | null>(null);
+  let undoing = $state(false);
   let importMessage = $state<string | null>(null);
   let importCrs = $state<'EPSG:4326' | 'dataset'>('EPSG:4326');
   let trainResolution = $state<'patch' | 'pixel'>('patch');
@@ -217,7 +219,7 @@
   }
 
   async function submit() {
-    if (!sample || !choice || !workspace.project || submitting) return;
+    if (!sample || !choice || !workspace.project || submitting || undoing) return;
     const reviewed = sample;
     const className = choice;
     const projectId = workspace.project.id;
@@ -228,7 +230,7 @@
     requestError = null;
     try {
       const currentItem = await resolveItem(reviewed.sampleId);
-      await api.submitLabel(projectId, {
+      const saved = await api.submitLabel(projectId, {
         sampleId: reviewed.sampleId,
         datasetId: reviewed.datasetId,
         className,
@@ -239,6 +241,7 @@
         ...(batchId ? { queryBatchId: batchId, queryItemId: currentItem?.id } : {}),
       });
       if (workspace.project?.id !== projectId) return;
+      undoEntry = { project: projectId, label: saved.id, sample: reviewed, batch: batchId };
       if (batch?.batchId === batchId) {
         const next = nextSample(reviewed);
         workspace.markDecision(reviewed, className);
@@ -253,6 +256,29 @@
     } finally {
       submitting = false;
     }
+  }
+
+  async function undoLastLabel() {
+    const entry = undoEntry;
+    if (!entry?.sample || entry.project !== workspace.project?.id || submitting || undoing) return;
+    undoing = true;
+    requestError = null;
+    try {
+      const result = await api.undoLabel(entry.project, entry.label);
+      const restored = entry.batch ? result.restored_query_class : result.restored_class;
+      undoEntry = null;
+      if (workspace.project?.id !== entry.project) return;
+      if (batch?.batchId === entry.batch) {
+        if (restored) workspace.markDecision(entry.sample, restored);
+        else workspace.unmarkDecision(entry.sample.sampleId);
+        focus(entry.sample.sampleId);
+      }
+      workspace.notify(t('review.undoDone'));
+      await workspace.reload();
+      void loadHistory();
+    } catch (error) {
+      requestError = error instanceof Error ? error.message : String(error);
+    } finally { undoing = false; }
   }
 
   /**
@@ -484,6 +510,9 @@
     <span>{workspace.engineError}</span>
     {#if schemaRefused}<span>{t('learning.train.schemaHint')}</span>{/if}
   </Alert>
+{/if}
+{#if !sample && undoEntry && undoEntry.project === workspace.project?.id}
+  <button class="button" disabled={submitting || undoing} onclick={undoLastLabel}>{t('review.undo')}</button>
 {/if}
 {#if requestError}
   <Alert title={t('error.generic')}><span>{requestError}</span></Alert>
@@ -763,12 +792,16 @@
         <div class="label-actions">
           <span class="label-hint">{t('learning.localDraftServer')}</span>
           <div class="label-buttons">
+{#if undoEntry && undoEntry.project === workspace.project?.id}
+  <button class="button" disabled={submitting || undoing} onclick={undoLastLabel}>{t('review.undo')}</button>
+{/if}
+
             {#if decision}
               <button class="button quiet" onclick={removeLabel} title={t('learning.delete')}><Trash2 size={14} /> {t('learning.delete')}</button>
             {/if}
             <button class="button" onclick={() => decide(sample, 'rejected')} title={t('learning.reject')}><X size={14} /> {t('learning.reject')}</button>
             <button class="button" onclick={skip} title={t('learning.skip')}><SkipForward size={14} /> {t('learning.skip')}</button>
-            <button class="button primary" disabled={!choice || submitting || choice === decision?.className} onclick={submit}>
+            <button class="button primary" disabled={!choice || submitting || undoing || choice === decision?.className} onclick={submit}>
               {submitting ? t('learning.submitting') : decision ? t('learning.resubmit') : t('learning.submit')}
             </button>
           </div>
