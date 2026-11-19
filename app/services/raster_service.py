@@ -102,6 +102,27 @@ def extract_metadata(path: str | Path) -> dict:
         raise RasterError(f"Could not read GeoTIFF: {exc}") from exc
 
 
+def extract_band_identity(path: str | Path) -> dict[str, Any]:
+    """Read the raster's own band names/descriptions, for schema declaration.
+
+    Only what the file says: no filename parsing, no sensor guesses.
+    """
+    try:
+        with rasterio.open(path) as ds:
+            names: list[str | None] = []
+            for index, description in enumerate(ds.descriptions, start=1):
+                tags = ds.tags(index)
+                names.append(
+                    (str(description) if description else None)
+                    or tags.get("NAME")
+                    or tags.get("BAND_NAME")
+                    or None
+                )
+            return {"band_count": ds.count, "band_names": names}
+    except Exception as exc:  # unreadable file is handled by the caller's earlier check
+        raise RasterError(f"Could not read band identity from GeoTIFF: {exc}") from exc
+
+
 def extract_scene_metadata(path: str | Path) -> dict[str, Any]:
     """Inspect a readable GeoTIFF without altering it; retain per-band mask facts."""
     try:
@@ -205,14 +226,48 @@ RESAMPLING_POLICIES = {
 }
 
 
+def check_element_budget(
+    count: int,
+    height: int,
+    width: int,
+    max_elements: int,
+    *,
+    multiplier: int = 1,
+    what: str = "this raster",
+) -> None:
+    """Refuse an in-memory operation before any array is allocated.
+
+    The guard rail is a *count of float32 elements* the engine would have to
+    hold at once, not a promise about throughput. `multiplier` accounts for the
+    extra per-pixel tensors an operation materialises (one probability band per
+    class, for example). Failure is actionable: it names the numbers, the knob
+    and the workarounds, so a user can see how far over the line they are.
+    """
+    needed = count * height * width * max(1, multiplier)
+    if needed <= max_elements:
+        return
+    detail = (
+        f"{what} needs {count}x{height}x{width}"
+        + (f"x{multiplier}" if multiplier > 1 else "")
+        + f" = {needed:,} float32 elements, over the configured limit of "
+        f"{max_elements:,} (MAX_RASTER_ELEMENTS)."
+    )
+    if multiplier > 1:
+        detail += (
+            " The extra factor is the number of class-probability bands produced per "
+            "pixel."
+        )
+    detail += (
+        " Nothing was allocated. Predict a window with `region`, use patch resolution "
+        "instead of per-pixel inference, or raise MAX_RASTER_ELEMENTS knowingly."
+    )
+    raise RasterError(detail)
+
+
 def load_raster(path: str | Path, nodata: float | None, max_elements: int) -> np.ndarray:
     """Load raster as float32 (bands, H, W); masked/non-finite pixels become NaN."""
     with rasterio.open(path) as ds:
-        if ds.count * ds.height * ds.width > max_elements:
-            raise RasterError(
-                f"Raster too large for synchronous MVP processing "
-                f"({ds.count}x{ds.height}x{ds.width} > {max_elements} elements)"
-            )
+        check_element_budget(ds.count, ds.height, ds.width, max_elements, what="loading")
         # read_masks honors per-band GDAL masks as well as nodata metadata.
         masked = ds.read(masked=True, out_dtype="float32")
         arr = masked.filled(np.nan)

@@ -6,8 +6,28 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .v001_scene_foundation import upgrade as upgrade_v1
+from .v002_dataset_band_schema import upgrade as upgrade_v2
+from .v003_project_taxonomy import upgrade as upgrade_v3
+from .v004_label_submitted_class import upgrade as upgrade_v4
+from .v005_run_trained_classes import upgrade as upgrade_v5
+from .v006_query_batches import upgrade as upgrade_v6
+from .v007_lineage import upgrade as upgrade_v7
+from .v008_scene_analysis import upgrade as upgrade_v8
+from .v009_research import upgrade as upgrade_v9
+from .v010_project_cascades import upgrade as upgrade_v10
 
-MIGRATIONS = [(1, upgrade_v1)]
+MIGRATIONS = [
+    (1, upgrade_v1),
+    (2, upgrade_v2),
+    (3, upgrade_v3),
+    (4, upgrade_v4),
+    (5, upgrade_v5),
+    (6, upgrade_v6),
+    (7, upgrade_v7),
+    (8, upgrade_v8),
+    (9, upgrade_v9),
+    (10, upgrade_v10),
+]
 
 
 async def run_migrations(connection: AsyncConnection) -> None:

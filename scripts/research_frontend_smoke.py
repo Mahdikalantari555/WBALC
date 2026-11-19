@@ -5,7 +5,7 @@ Runs against a live dev/preview server of `examples/wbalc-geospatial-research-in
 (default http://localhost:5173) which must proxy to a live RSAL backend, and
 drives only the *browser-facing* adapter routes:
 
-    create project -> upload GeoTIFF -> diversity query -> label -> train
+    create project -> upload GeoTIFF -> durable query batches -> label -> train
     -> metrics/runs -> map field -> exports -> scene registration -> label
     import -> label deletion -> i18n document attributes
 
@@ -151,12 +151,23 @@ def main() -> None:
             project["classificationConfig"]["internalClasses"] == ["open_water", "emergent_vegetation", "land"],
             str(project["classes"]),
         )
+        check(
+            "water taxonomy snapshot recorded",
+            project["taxonomy"] is not None
+            and project["taxonomy"]["version"] == "wbalc-water-taxonomy-v1"
+            and project["taxonomy"]["classes"] == ["open_water", "emergent_vegetation", "land"],
+            str(project["taxonomy"] and project["taxonomy"].get("version")),
+        )
 
         # -------------------------------------------------------------- upload
         # 256x256 -> an 8x8 patch grid, so a 20-sample diversity batch is real.
         tif = make_geotiff(256, 256)
+        # Declared band names: the engine refuses to train or predict on rasters
+        # whose ordered bands it cannot identify without an explicit override.
         r = direct.post(
-            f"/projects/{pid}/upload", files={"file": ("smoke.tif", tif, "image/tiff")}
+            f"/projects/{pid}/upload",
+            files={"file": ("smoke.tif", tif, "image/tiff")},
+            data={"band_names": "blue,green,red,nir", "sensor": "sentinel-2"},
         )
         check("upload GeoTIFF (engine)", r.status_code == 201, str(r.status_code))
         did = r.json()["id"]
@@ -167,6 +178,13 @@ def main() -> None:
         dataset = datasets[0]
         check("dataset georeferenced + bounds", dataset["georeferenced"] is True and dataset["bounds"] is not None)
         check("dataset url is adapter-relative", dataset["url"] == f"/api/projects/{pid}/datasets/{did}/file")
+        check(
+            "dataset reports its declared band schema",
+            dataset["bandSchemaDeclared"] is True
+            and dataset["bandNames"] == ["blue", "green", "red", "nir"]
+            and dataset["sensor"] == "sentinel-2",
+            str(dataset.get("bandNames")),
+        )
 
         r = client.get(dataset["url"])
         check(
@@ -207,9 +225,92 @@ def main() -> None:
         check("sample view model has pixel window", sample["window"]["x1"] > sample["window"]["x0"])
         check("sample has geo centre (CRS)", sample["geo"] is not None and len(sample["geo"]) == 2)
 
+        # ------------------------------------------ durable batches (Phase 2)
+        check(
+            "batch carries durable identity + pool",
+            isinstance(batch.get("batchId"), str)
+            and batch["pool"]["size"] > 0
+            and batch["pool"]["eligibility"].startswith("valid-source-pixels"),
+            str(batch.get("batchId")),
+        )
+        check(
+            "deterministic strategy records no seed",
+            batch["seed"] is None,
+            str(batch["seed"]),
+        )
+
+        seeded = client.post(
+            f"/api/projects/{pid}/query",
+            json={
+                "strategy": "random",
+                "batchSize": 12,
+                "datasetId": str(did),
+                "seed": 4242,
+            },
+        ).json()
+        check("seeded random baseline", seeded["seed"] == 4242 and len(seeded["samples"]) == 12)
+        check(
+            "random and diversity share one candidate pool",
+            seeded["pool"]["hash"] == batch["pool"]["hash"],
+        )
+        again = client.post(
+            f"/api/projects/{pid}/query",
+            json={
+                "strategy": "random",
+                "batchSize": 12,
+                "datasetId": str(did),
+                "seed": 4242,
+            },
+        ).json()
+        check(
+            "seeded random is repeatable across requests",
+            [s["sampleId"] for s in again["samples"]]
+            == [s["sampleId"] for s in seeded["samples"]]
+            and again["batchId"] != seeded["batchId"],
+        )
+
+        history = client.get(f"/api/projects/{pid}/queries").json()
+        check(
+            "history lists batches newest first",
+            [entry["batchId"] for entry in history][:2]
+            == [again["batchId"], seeded["batchId"]],
+            str([entry["batchId"] for entry in history[:3]]),
+        )
+        reopened = client.get(f"/api/projects/{pid}/queries/{batch['batchId']}").json()
+        check(
+            "batch reopens with the same items and order",
+            [item["sampleId"] for item in reopened["items"]]
+            == [s["sampleId"] for s in batch["samples"]],
+        )
+
+        target = reopened["items"][0]
+        r = client.patch(
+            f"/api/projects/{pid}/queries/{batch['batchId']}/items/{target['id']}",
+            json={"status": "rejected", "note": "smoke: not water"},
+        )
+        check(
+            "rejection is a durable decision",
+            r.status_code == 200 and r.json()["status"] == "rejected",
+            str(r.status_code),
+        )
+        r = client.patch(
+            f"/api/projects/{pid}/queries/{batch['batchId']}/items/{target['id']}",
+            json={"status": "deferred"},
+        )
+        check("decision transitions persist", r.json()["status"] == "deferred")
+        listing = client.get(f"/api/projects/{pid}/queries").json()
+        entry = next(e for e in listing if e["batchId"] == str(batch["batchId"]))
+        check(
+            "history reports decision counts",
+            entry["decisions"]["deferred"] == 1
+            and entry["decisions"]["pending"] == entry["returned"] - 1,
+            str(entry["decisions"]),
+        )
+
         # ------------------------------------------------------------ labels
         classes = project["classes"]
         submitted = batch["samples"][:12]
+        linked_item = reopened["items"][1]
         for index, item in enumerate(submitted):
             r = client.post(
                 f"/api/projects/{pid}/labels",
@@ -220,6 +321,13 @@ def main() -> None:
                     "col": item["center"][0],
                     "row": item["center"][1],
                     "iteration": 0,
+                    # The first sample is answered from its durable query item,
+                    # so the engine records query provenance for it.
+                    **(
+                        {"queryBatchId": batch["batchId"], "queryItemId": linked_item["id"]}
+                        if index == 1
+                        else {}
+                    ),
                 },
             )
             check(f"submit label {index + 1}/{len(submitted)}", r.status_code == 200, str(r.status_code))
@@ -250,6 +358,28 @@ def main() -> None:
         r = client.get(f"/api/projects/{pid}/labels")
         labels = r.json()
         check("adapter label list", len(labels) == len(submitted) and labels[0]["center"] is not None)
+        linked = next(
+            (entry for entry in labels if entry["sampleId"] == submitted[1]["sampleId"]), None
+        )
+        check(
+            "label answered from a query item records query provenance",
+            linked is not None and linked["provenance"] == "query",
+            str(linked and linked["provenance"]),
+        )
+        check(
+            "typed labels report manual provenance",
+            all(
+                entry["provenance"] == "manual"
+                for entry in labels
+                if entry["sampleId"] != submitted[1]["sampleId"]
+            ),
+        )
+        item_after = client.get(f"/api/projects/{pid}/queries/{batch['batchId']}").json()["items"][1]
+        check(
+            "the query item became labeled and points at the label version",
+            item_after["status"] == "labeled" and item_after["labelId"] == linked["id"],
+            str(item_after["status"]),
+        )
 
         # ------------------------------------------------------------- train
         # Through the adapter: the resolution and validation protocol must be
@@ -285,6 +415,79 @@ def main() -> None:
             == engine_metrics["evaluation"].startswith("insufficient_train"),
             f"engine evaluation={engine_metrics['evaluation']}",
         )
+
+        # ------------------------------- content identity + manifests (Phase 3)
+        dataset_view = next(d for d in client.get(f"/api/projects/{pid}/datasets").json())
+        check(
+            "upload records a content hash the adapter exposes",
+            isinstance(dataset_view["contentSha256"], str) and len(dataset_view["contentSha256"]) == 64,
+            str(dataset_view["contentSha256"])[:12],
+        )
+        check(
+            "run list reports lineage completeness",
+            run["lineageStatus"] == "complete" and len(run["manifestHash"]) == 64,
+            f"{run['lineageStatus']}/{str(run['manifestHash'])[:8]}",
+        )
+        lineage = client.get(f"/api/projects/{pid}/runs/{run['id']}/lineage").json()
+        check(
+            "run lineage names its inputs and label snapshot",
+            lineage["inputs"][0]["sha256"] == dataset_view["contentSha256"]
+            and lineage["labelSnapshotHash"] is not None
+            and lineage["status"] == "complete",
+            f"{lineage['status']}/{str(lineage['labelSnapshotHash'])[:8]}",
+        )
+        check(
+            "checkpoint artifact verifies against its recorded checksum",
+            lineage["artifact"]["verified"] is True,
+            str(lineage["artifact"]),
+        )
+        check(
+            "manifest carries environment + config",
+            lineage["environment"]["python"] and lineage["config"]["resolution"] == "patch",
+            str(lineage["environment"]),
+        )
+        check(
+            "manifest exposes no machine-local paths",
+            "/home/" not in str(lineage) and "storage/" not in str(lineage),
+        )
+
+        # The adapter's exports route streams a file, so artifact metadata is read
+        # from the engine (which is also where the checksum is recorded).
+        materialised = client.get(f"/api/projects/{pid}/exports?type=hard&dataset={did}")
+        exports = direct.get(f"/projects/{pid}/exports").json()
+        check(
+            "export download streams the artifact",
+            materialised.status_code == 200
+            and materialised.headers["content-type"].startswith("image/tiff"),
+            str(materialised.status_code),
+        )
+        check(
+            "export records its checksum and integrity verdict",
+            len(exports) > 0 and len(exports[0]["sha256"]) == 64 and exports[0]["integrity"] == "verified",
+            str(exports[0]["integrity"] if exports else None),
+        )
+
+        experiment = client.post(
+            f"/api/projects/{pid}/experiments",
+            json={"name": "Smoke experiment", "runIds": [run["id"]]},
+        )
+        check(
+            "experiment groups a run without touching it",
+            experiment.status_code == 201 and experiment.json()["runIds"] == [run["id"]],
+            experiment.text[:120],
+        )
+        exp_id = experiment.json()["id"]
+        comparison = client.get(f"/api/projects/{pid}/compare?runs={run['id']}").json()
+        check(
+            "single-run comparison refuses to claim comparability",
+            comparison["comparable"] is False and comparison["caveats"],
+            str(comparison["caveats"])[:80],
+        )
+        detail = client.get(f"/api/projects/{pid}/experiments/{exp_id}").json()
+        check(
+            "experiment detail carries its membership",
+            detail["experiment"]["runIds"] == [run["id"]],
+        )
         check(
             "evaluation protocol is exposed",
             run["metrics"]["evaluationStrategy"] == "random" and run["metrics"]["nTest"] is not None,
@@ -300,8 +503,89 @@ def main() -> None:
             and len(field["values"]) == field["grid"]["rows"]
             and len(field["values"][0]) == field["grid"]["cols"],
         )
+        check(
+            "hard field reports provenance",
+            field["bandSchemaVerified"] is True
+            and field["studyAreaApplied"] is False
+            and field["trainingRunId"] == str(trained["id"]),
+            f"verified={field.get('bandSchemaVerified')}",
+        )
         r = client.get(f"/api/projects/{pid}/map-field?layer=uncertainty&method=entropy&dataset={did}")
         check("uncertainty map field", r.status_code == 200 and r.json()["layer"] == "uncertainty")
+
+        # ------------------------------------- band-schema refusal + override
+        # A raster that names no bands cannot be proven to carry the model's
+        # ordered bands. The engine must refuse, the adapter must relay the
+        # refusal, and only an explicit override may produce a product.
+        r = direct.post(
+            f"/projects/{pid}/upload",
+            files={"file": ("unnamed.tif", make_geotiff(256, 256), "image/tiff")},
+        )
+        check("upload without declared bands", r.status_code == 201, r.text[:120])
+        unnamed = r.json()["id"]
+        r = client.get(f"/api/projects/{pid}/datasets")
+        undeclared = next(item for item in r.json() if item["id"] == str(unnamed))
+        check(
+            "undeclared raster is reported as undeclared, not guessed",
+            undeclared["bandSchemaDeclared"] is False
+            and undeclared["bandNames"] is None
+            and undeclared["sensor"] is None,
+            str(undeclared.get("bandNames")),
+        )
+        r = client.get(f"/api/projects/{pid}/map-field?layer=hard&dataset={unnamed}")
+        check(
+            "undeclared bands -> refusal relayed by the adapter",
+            r.status_code == 409 and "accept_unverified_schema" in r.json()["message"],
+            f"{r.status_code} {r.json().get('message', '')[:70]}",
+        )
+        # The override records the operator's decision; it cannot invent a
+        # schema. The product is still produced, and still flagged unverified.
+        r = client.get(
+            f"/api/projects/{pid}/map-field?layer=hard&dataset={unnamed}&accept_unverified_schema=true"
+        )
+        check(
+            "explicit override produces a product flagged unverified",
+            r.status_code == 200 and r.json()["bandSchemaVerified"] is False,
+            f"{r.status_code} body={r.text[:120]}",
+        )
+
+        # -------------------------------------- water taxonomy + binary product
+        r = direct.get(f"/projects/{pid}/taxonomy")
+        described = r.json()
+        check(
+            "taxonomy endpoint describes the binary plan",
+            r.status_code == 200
+            and described["binary"]["interpretation"] == "water_vs_non_water"
+            and described["binary"]["mapping"]["emergent_vegetation"] == "water",
+            str(described.get("binary", {}).get("mapping")),
+        )
+
+        r = client.get(f"/api/projects/{pid}/map-field?layer=binary&dataset={did}")
+        check(
+            "derived binary map layer",
+            r.status_code == 200 and r.json()["classes"] == ["non_water", "water"],
+            f"{r.status_code} {r.text[:80]}",
+        )
+        binary_field = r.json()
+        check(
+            "binary layer reports its mapping and availability",
+            binary_field["binary"]["available"] is True
+            and set(binary_field["binary"]["mapping"].values()) <= {"water", "non_water"},
+        )
+        r = client.get(f"/api/projects/{pid}/exports?type=binary&dataset={did}")
+        check(
+            "derived binary GeoTIFF proxied",
+            r.status_code == 200 and r.headers["content-type"].startswith("image/tiff"),
+            str(r.status_code),
+        )
+        with rasterio.open(io.BytesIO(r.content)) as exported:
+            check(
+                "binary export is a categorical source-grid product",
+                exported.width == 256
+                and exported.height == 256
+                and exported.tags().get("derived") == "true"
+                and exported.tags().get("interpretation") == "water_vs_non_water",
+            )
 
         # ------------------------------------------------------------ exports
         r = client.get(f"/api/projects/{pid}/exports?type=hard&dataset={did}")
@@ -341,6 +625,326 @@ def main() -> None:
             and scenes[0]["acquisitionDateTime"] is not None
             and scenes[0]["width"] in {256, 80},
         )
+
+        # ------------------------------------- Phase 4: scene classification
+        # Scene classification needs a *provable* band schema, so classify via the
+        # adapter for the scene registered with matching bands, and prove the
+        # refusal path for a scene whose bands are unnamed.
+        scene_ids = [scene["id"] for scene in scenes]
+        for scene_id in scene_ids:
+            r = client.post(f"/api/projects/{pid}/scenes/{scene_id}/classify", json={})
+            check(
+                f"scene {scene_id} classification is refused without a band schema",
+                r.status_code in {422, 409},
+                str(r.status_code),
+            )
+
+        # Re-register comparable scenes that declare their bands, so the temporal
+        # and fusion paths can actually run.
+        from io import BytesIO as _BytesIO
+
+        def scene_with_bands(height=64, width=64, seed=3):
+            rng = np.random.default_rng(seed)
+            data = np.zeros((4, height, width), dtype=np.float32)
+            data[:, :, : width // 2] = np.array([10, 20, 100, 120], dtype=np.float32)[:, None, None] + rng.normal(
+                0, 2, (4, height, width // 2)
+            )
+            data[:, :, width // 2 :] = np.array([80, 90, 30, 150], dtype=np.float32)[:, None, None] + rng.normal(
+                0, 2, (4, height, width - width // 2)
+            )
+            buffer = _BytesIO()
+            with rasterio.open(
+                buffer, "w", driver="GTiff", height=height, width=width, count=4,
+                dtype="float32", crs="EPSG:32631", transform=from_origin(500000, 4649776, 10, 10),
+            ) as dst:
+                dst.write(data)
+                for index, name in enumerate(["blue", "green", "red", "nir"], start=1):
+                    dst.set_band_description(index, name)
+            return buffer.getvalue()
+
+        named = []
+        for day, sensor, seed in (
+            ("2025-03-01T00:00:00Z", "Sentinel-2", 3),
+            ("2025-03-20T00:00:00Z", "Sentinel-1", 4),
+        ):
+            r = direct.post(
+                f"/projects/{pid}/scenes",
+                files={"file": (f"named-{day[:10]}.tif", scene_with_bands(seed=seed), "image/tiff")},
+                data={"sensor": sensor, "acquisition_datetime": day},
+            )
+            check(f"register named-band {sensor} scene", r.status_code == 201, r.text[:120])
+            named.append(r.json()["id"])
+
+        analyses = []
+        for scene_id in named:
+            r = client.post(
+                f"/api/projects/{pid}/scenes/{scene_id}/classify",
+                json={"acceptUnverifiedSchema": True},
+            )
+            check(f"classify scene {scene_id} via adapter", r.status_code == 201, r.text[:160])
+            if r.status_code != 201:
+                continue
+            analysis = r.json()
+            analyses.append(analysis)
+            check(
+                "analysis keeps grid, contract and checksummed artifacts",
+                analysis["sceneId"] == str(scene_id)
+                and analysis["nativeGrid"] is True
+                and analysis["crs"] == "EPSG:32631"
+                and analysis["width"] == 64
+                and set(analysis["artifacts"]) == {"hard", "probability", "uncertainty"}
+                and len(analysis["artifacts"]["hard"]["sha256"]) == 64,
+                f"{analysis['width']}x{analysis['height']} {list(analysis['artifacts'])}",
+            )
+            check(
+                "areas carry their method and a valid denominator",
+                analysis["areas"]["available"]
+                and analysis["areas"]["method"]["kind"] == "projected"
+                and analysis["areas"]["method"]["pixelAreaM2"] == 100
+                and analysis["areas"]["validAreaM2"] > 0
+                and abs(
+                    sum(entry["areaM2"] for entry in analysis["areas"]["perClass"])
+                    - analysis["areas"]["validAreaM2"]
+                )
+                < 1e-6,
+                f"{analysis['areas']['validAreaHa']} ha",
+            )
+
+        if analyses:
+            first = analyses[0]
+            response = client.get(
+                f"/api/projects/{pid}/analyses/{first['id']}/exports/hard"
+            )
+            check(
+                "scene export proxied and verified",
+                response.status_code == 200
+                and response.headers.get("x-rsal-export-integrity") == "verified"
+                and response.headers.get("x-rsal-export-sha256") == first["artifacts"]["hard"]["sha256"],
+                f"{len(response.content)} bytes",
+            )
+
+            r = client.get(f"/api/projects/{pid}/temporal/series")
+            check("temporal series via adapter", r.status_code == 200, r.text[:160])
+            if r.status_code == 200:
+                series = r.json()
+                check(
+                    "series is native and reports per-date areas",
+                    series["mode"] == "native"
+                    and len(series["dates"]) >= 1
+                    and all(date["validAreaM2"] > 0 for date in series["dates"]),
+                    f"{len(series['dates'])} dates",
+                )
+
+            if len(analyses) >= 2:
+                r = client.post(
+                    f"/api/projects/{pid}/temporal/compare",
+                    json={
+                        "beforeSceneId": analyses[0]["sceneId"],
+                        "afterSceneId": analyses[1]["sceneId"],
+                    },
+                )
+                check("compare dates via adapter", r.status_code == 200, r.text[:160])
+                if r.status_code == 200:
+                    comparison = r.json()
+                    check(
+                        "comparison reports no resampling and a joint denominator",
+                        comparison["aligned"] is False
+                        and comparison["jointValidAreaM2"] > 0
+                        and comparison["denominator"] == "pixels valid in both dates",
+                        f"{comparison['changedAreaHa']} ha changed",
+                    )
+
+                r = client.post(
+                    f"/api/projects/{pid}/fusion",
+                    json={
+                        "rule": "weighted_probability",
+                        "targetSceneId": analyses[0]["sceneId"],
+                        "analysisIds": [entry["id"] for entry in analyses[:2]],
+                        "weights": {"Sentinel-1": 0.5, "Sentinel-2": 0.5},
+                    },
+                )
+                check("late fusion via adapter", r.status_code == 201, r.text[:200])
+                if r.status_code == 201:
+                    fusion = r.json()
+                    check(
+                        "fusion keeps per-source lineage and agreement",
+                        len(fusion["sources"]) == 2
+                        and all(source["analysisDigest"] for source in fusion["sources"])
+                        and fusion["fusionDigest"] is not None
+                        and fusion["unanimousShare"] is not None,
+                        f"{fusion['rule']} aligned={fusion['aligned']}",
+                    )
+                    listed = client.get(f"/api/projects/{pid}/fusion")
+                    check("adapter lists fusions", listed.status_code == 200 and len(listed.json()) >= 1)
+
+                    rejected = client.post(
+                        f"/api/projects/{pid}/fusion",
+                        json={
+                            "rule": "raw_band_fusion",
+                            "targetSceneId": analyses[0]["sceneId"],
+                            "analysisIds": [entry["id"] for entry in analyses[:2]],
+                        },
+                    )
+                    check(
+                        "raw-band early fusion is rejected",
+                        rejected.status_code == 422,
+                        rejected.text[:120],
+                    )
+
+        # ------------------------------------------- research evaluation (Phase 5)
+        # Everything below goes through the adapter, so it proves the routes exist
+        # and that the view models keep the nulls the engine reported.
+        r = client.get(f"/api/projects/{pid}/research/status")
+        check(
+            "research status separates software from scientific validity",
+            r.status_code == 200
+            and r.json()["scientificValidity"] == "not established"
+            and "synthetic" in r.json()["softwareValidation"],
+            r.text[:160],
+        )
+
+        r = client.post(
+            f"/api/projects/{pid}/research/protocols",
+            json={"protocol": "random", "seed": 11, "testSize": 0.25},
+        )
+        check("declare random protocol via adapter", r.status_code == 201, r.text[:200])
+        protocol = r.json() if r.status_code == 201 else {}
+        check(
+            "protocol echoes split membership and hash",
+            protocol.get("status") == "ok"
+            and protocol.get("trainCount", 0) + protocol.get("testCount", 0) > 0
+            and protocol.get("splitHash") is not None,
+            str({k: protocol.get(k) for k in ("status", "trainCount", "testCount", "splitHash")})[:160],
+        )
+
+        r = client.post(
+            f"/api/projects/{pid}/research/protocols",
+            json={"protocol": "spatial", "seed": 11, "blockSize": 64, "buffer": 16},
+        )
+        check("declare spatial protocol via adapter", r.status_code == 201, r.text[:200])
+        spatial = r.json() if r.status_code == 201 else {}
+        if spatial.get("status") == "insufficient":
+            check(
+                "insufficient spatial split explains itself",
+                bool(spatial.get("reason")),
+                str(spatial.get("reason"))[:120],
+            )
+        else:
+            check(
+                "spatial split documents its block key",
+                "buffer" in spatial.get("configuration", {})
+                and spatial.get("configuration", {}).get("blockKey"),
+                str(spatial.get("configuration", {}))[:160],
+            )
+
+        r = client.get(f"/api/projects/{pid}/research/protocols")
+        check("adapter lists protocols", r.status_code == 200 and len(r.json()) == 2, r.text[:120])
+
+        if protocol.get("id"):
+            r = client.post(
+                f"/api/projects/{pid}/research/evaluations",
+                json={"protocolId": protocol["id"], "modelType": "rf", "resolution": "patch"},
+            )
+            check("held-out evaluation via adapter", r.status_code == 201, r.text[:200])
+            evaluation = r.json() if r.status_code == 201 else {}
+            undefined = [
+                key
+                for row in evaluation.get("classes", [])
+                for key in row.get("undefined", {})
+            ]
+            check(
+                "evaluation keeps split hash + per-class support",
+                evaluation.get("splitHash") is not None
+                and len(evaluation.get("classes", [])) >= 2
+                and all("support" in row for row in evaluation.get("classes", [])),
+                str(evaluation.get("nTest"))[:80],
+            )
+            check(
+                "undefined per-class metrics stay null with a reason",
+                all(
+                    row[key] is None
+                    for row in evaluation.get("classes", [])
+                    for key in row.get("undefined", {})
+                ),
+                str(undefined)[:120],
+            )
+            check(
+                "calibration is reported only with its sample count",
+                evaluation.get("calibration", {}).get("available") is False
+                or evaluation.get("calibration", {}).get("nSamples", 0) > 0,
+                str(evaluation.get("calibration", {}))[:160],
+            )
+            check(
+                "evaluation caveats say it refit on the training partition",
+                any("train" in caveat.lower() for caveat in evaluation.get("caveats", [])),
+                str(evaluation.get("caveats"))[:160],
+            )
+
+        # Area error is refused until an independent reference area exists.
+        r = client.post(
+            f"/api/projects/{pid}/research/reference-areas",
+            json={"waterAreaM2": -5, "source": "x", "method": "y"},
+        )
+        check("negative reference area rejected", r.status_code >= 400, r.text[:120])
+        r = client.post(
+            f"/api/projects/{pid}/research/reference-areas",
+            json={"waterAreaM2": 25_000, "source": "", "method": "digitised"},
+        )
+        check("reference area without a source rejected", r.status_code >= 400, r.text[:120])
+        r = client.post(
+            f"/api/projects/{pid}/research/reference-areas",
+            json={
+                "waterAreaM2": 25_000,
+                "source": "field survey 2026-01",
+                "method": "GNSS shoreline survey",
+            },
+        )
+        check("reference area with provenance", r.status_code == 201, r.text[:160])
+        r = client.get(f"/api/projects/{pid}/research/reference-areas")
+        check("adapter lists reference areas", r.status_code == 200 and len(r.json()) == 1, r.text[:120])
+
+        r = client.post(
+            f"/api/projects/{pid}/research/plans",
+            json={"name": "resolution ablation", "comparisonMetric": "f1_macro", "repetitions": 2},
+        )
+        check("declare research plan", r.status_code == 201, r.text[:160])
+        plan = r.json() if r.status_code == 201 else {}
+        if plan.get("id"):
+            r = client.post(
+                f"/api/projects/{pid}/research/plans/compare",
+                json={"planId": plan["id"]},
+            )
+            check("plan comparison exposes shared/differing factors", r.status_code == 200, r.text[:160])
+            if r.status_code == 200:
+                comparison = r.json()
+                check(
+                    "comparison reports a pairing verdict",
+                    isinstance(comparison.get("paired"), bool)
+                    and "differing" in comparison,
+                    str(comparison.get("paired")),
+                )
+
+        r = client.post(f"/api/projects/{pid}/research/reports", json={"title": "phase 5"})
+        check("generate report bundle", r.status_code == 201, r.text[:200])
+        report = r.json() if r.status_code == 201 else {}
+        check(
+            "bundle lists hashed artifacts + scientific status",
+            report.get("digest") is not None
+            and "json" in report.get("artifacts", {})
+            and report.get("scientificStatus", {}).get("scientificValidity") == "not established",
+            str(sorted(report.get("artifacts", {})))[:120],
+        )
+        if report.get("id"):
+            r = client.get(
+                f"/api/projects/{pid}/research/reports/{report['id']}/files/json"
+            )
+            check(
+                "report artifact downloads through the adapter",
+                r.status_code == 200 and len(r.content) > 0,
+                str(r.status_code),
+            )
+            r = client.get(f"/api/projects/{pid}/research/reports/{report['id']}/files/pdf")
+            check("unknown artifact kind rejected", r.status_code == 400, str(r.status_code))
 
         # ------------------------------------------------------- label import
         # A WGS84 feature derived from the dataset's own UTM origin.

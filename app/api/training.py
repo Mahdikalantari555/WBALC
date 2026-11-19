@@ -6,8 +6,9 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from ..models import TrainingRun
-from ..schemas import MetricsOut, TrainRequest, TrainResponse
+from ..schemas import MetricsOut, RunSummaryOut, TrainRequest, TrainResponse
 from ..services.pipeline import run_training
+from ..services.schema_service import SchemaConflict
 from ..services.training_service import TrainingError
 from .deps import SessionDep, SettingsDep, get_project, latest_run
 
@@ -41,6 +42,32 @@ def run_to_metrics_out(run: TrainingRun) -> MetricsOut:
     )
 
 
+def run_to_summary(run: TrainingRun) -> RunSummaryOut:
+    """Metrics plus the lineage pointer, so a run list states its completeness."""
+    base = run_to_metrics_out(run)
+    manifest = run.manifest
+    status = "legacy" if not manifest else ("complete" if manifest.get("complete") else "incomplete")
+    return RunSummaryOut(
+        **base.model_dump(),
+        manifest_hash=(manifest or {}).get("hash"),
+        lineage_status=status,
+        experiment_id=run.experiment_id,
+        checkpoint_sha256=run.checkpoint_sha256,
+    )
+
+
+@router.get("/runs", response_model=list[RunSummaryOut])
+async def list_runs(project_id: int, session: SessionDep) -> list[RunSummaryOut]:
+    """Every training run of the project, with lineage status per run."""
+    await get_project(session, project_id)
+    result = await session.execute(
+        select(TrainingRun)
+        .where(TrainingRun.project_id == project_id)
+        .order_by(TrainingRun.iteration, TrainingRun.id)
+    )
+    return [run_to_summary(run) for run in result.scalars()]
+
+
 @router.post("/train", response_model=TrainResponse, status_code=201)
 async def train(project_id: int, payload: TrainRequest, session: SessionDep, settings: SettingsDep):
     """Train RF or LightGBM on the current labeled data (synchronous MVP)."""
@@ -56,7 +83,12 @@ async def train(project_id: int, payload: TrainRequest, session: SessionDep, set
             iteration=payload.iteration,
             test_size=payload.test_size,
             params=payload.params,
+            accept_unverified_schema=payload.accept_unverified_schema,
         )
+    except SchemaConflict as exc:
+        # A schema conflict is a client-fixable configuration error, not a
+        # "not enough data" condition, so it gets its own status.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except TrainingError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return TrainResponse(

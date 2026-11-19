@@ -33,7 +33,7 @@ export const views = {
 } as const;
 
 export type ViewId = keyof typeof views;
-export type MapLayer = 'imagery' | 'classification' | 'uncertainty' | 'samples';
+export type MapLayer = 'imagery' | 'classification' | 'binary' | 'uncertainty' | 'samples';
 export type BandMode = 'true-color' | 'false-color' | 'ndvi';
 export type UncertaintyMethod = 'entropy' | 'margin' | 'least_confidence';
 export type Selection =
@@ -45,14 +45,25 @@ export interface ReviewDraft {
   at: string;
 }
 
-/** Persisted per-project review state: the queue is a cache, not the truth. */
+/**
+ * Persisted per-project review state. The server owns the queue: `batchId` is
+ * the durable identity, and the cached copies below exist only so a reload is
+ * instant. `decisions` are the *submitted* decisions read back from the engine
+ * (or just written to it); a draft that was never submitted is never claimed.
+ */
 export interface ReviewState {
   batch: QueryBatchView | null;
+  batchId: string | null;
   decisions: Record<string, { className: string; at: string; sampleId: string }>;
   skipped: string[];
 }
 
-const EMPTY_REVIEW: ReviewState = { batch: null, decisions: {}, skipped: [] };
+const EMPTY_REVIEW: ReviewState = {
+  batch: null,
+  batchId: null,
+  decisions: {},
+  skipped: [],
+};
 
 export interface WorkspaceApi {
   locale: ReturnType<typeof createLocaleStore>;
@@ -68,7 +79,9 @@ export interface WorkspaceApi {
     resolution: 'patch' | 'pixel';
     evaluationStrategy: 'random' | 'spatial';
     modelType?: 'rf' | 'lightgbm';
+    acceptUnverifiedSchema?: boolean;
   }) => Promise<RunView | null>;
+  acceptSchemaOverride: () => Promise<void>;
 }
 
 class Workspace {
@@ -90,7 +103,13 @@ class Workspace {
 
   // ---- map
   map = $state({
-    layers: { imagery: true, classification: true, uncertainty: false, samples: true } as Record<
+    layers: {
+      imagery: true,
+      classification: true,
+      binary: false,
+      uncertainty: false,
+      samples: true,
+    } as Record<
       MapLayer,
       boolean
     >,
@@ -99,9 +118,21 @@ class Workspace {
     method: 'entropy' as UncertaintyMethod,
     selected: null as Selection | null,
   });
-  field = $state<{ hard: unknown; uncertainty: unknown }>({ hard: null, uncertainty: null });
+  field = $state<{ hard: unknown; uncertainty: unknown; binary: unknown }>({
+    hard: null,
+    uncertainty: null,
+    binary: null,
+  });
   fieldLoading = $state(false);
   fieldError = $state<string | null>(null);
+  /** HTTP status of the last field failure: 409 = band-schema conflict. */
+  fieldErrorStatus = $state<number | null>(null);
+  /**
+   * Explicit, per-session acceptance that this raster's bands are what the model
+   * expects. It is never inferred: the engine refuses to guess, and the UI only
+   * sets this after the operator confirms. Reset whenever the dataset changes.
+   */
+  schemaOverride = $state(false);
 
   // ---- review queue (client state, per project)
   review = $state<ReviewState>({ ...EMPTY_REVIEW });
@@ -202,7 +233,9 @@ class Workspace {
         primary: runs[0]?.id ?? null,
         challenger: runs[1]?.id ?? runs[0]?.id ?? null,
       };
-      this.field = { hard: null, uncertainty: null };
+      this.field = { hard: null, uncertainty: null, binary: null };
+      this.schemaOverride = false;
+      this.fieldErrorStatus = null;
       this.error = null;
       this.restoreReview();
     } catch (error) {
@@ -215,8 +248,11 @@ class Workspace {
   selectDataset(id: string) {
     if (this.datasetId === id) return;
     this.datasetId = id;
-    this.field = { hard: null, uncertainty: null };
+    this.field = { hard: null, uncertainty: null, binary: null };
     this.map.selected = null;
+    // A different raster is a different band question: never carry an override.
+    this.schemaOverride = false;
+    this.fieldErrorStatus = null;
   }
 
   // ------------------------------------------------------------ map layers
@@ -229,10 +265,24 @@ class Workspace {
    */
   private fieldCache = new globalThis.Map<string, MapFieldView>();
 
-  private fieldKey(layer: 'hard' | 'uncertainty', datasetId: string) {
+  private fieldKey(layer: 'hard' | 'uncertainty' | 'binary', datasetId: string) {
     const run = this.latestRun;
     const method = layer === 'uncertainty' ? this.map.method : 'hard';
-    return `${this.project?.id}:${datasetId}:${layer}:${method}:${run?.id ?? 'none'}`;
+    // The override is part of the identity: an overridden field is a different
+    // product from a verified one, and both may exist in one session.
+    return `${this.project?.id}:${datasetId}:${layer}:${method}:${run?.id ?? 'none'}:${
+      this.schemaOverride ? 'override' : 'strict'
+    }`;
+  }
+
+  /**
+   * Record the operator's explicit "these bands are the model's bands" decision
+   * and retry the field. The flag is sent to the engine, which stores it with
+   * the prediction, so the override is visible in the API and in the export.
+   */
+  async acceptSchemaOverride() {
+    this.schemaOverride = true;
+    await this.loadMapField();
   }
 
   async loadMapField() {
@@ -240,31 +290,42 @@ class Workspace {
     if (!dataset || !this.latestRun) return;
     const wantHard = this.map.layers.classification;
     const wantUncertainty = this.map.layers.uncertainty;
+    const wantBinary = this.map.layers.binary;
 
     const hardKey = this.fieldKey('hard', dataset.id);
     const uncertaintyKey = this.fieldKey('uncertainty', dataset.id);
+    const binaryKey = this.fieldKey('binary', dataset.id);
     const cachedHard: MapFieldView | null = wantHard
       ? (this.fieldCache.get(hardKey) ?? null)
       : null;
     const cachedUncertainty: MapFieldView | null = wantUncertainty
       ? (this.fieldCache.get(uncertaintyKey) ?? null)
       : null;
-    if ((!wantHard || cachedHard) && (!wantUncertainty || cachedUncertainty)) {
+    const cachedBinary: MapFieldView | null = wantBinary
+      ? (this.fieldCache.get(binaryKey) ?? null)
+      : null;
+    if (
+      (!wantHard || cachedHard) &&
+      (!wantUncertainty || cachedUncertainty) &&
+      (!wantBinary || cachedBinary)
+    ) {
       // Everything asked for is already known: no request at all.
-      this.field = { hard: cachedHard, uncertainty: cachedUncertainty };
+      this.field = { hard: cachedHard, uncertainty: cachedUncertainty, binary: cachedBinary };
       this.fieldError = null;
       return;
     }
 
     this.fieldLoading = true;
     this.fieldError = null;
+    this.fieldErrorStatus = null;
     try {
-      const [hard, uncertainty] = await Promise.all([
+      const [hard, uncertainty, binary] = await Promise.all([
         wantHard
           ? api.mapField(this.project!.id, {
               layer: 'hard',
               method: this.map.method,
               datasetId: dataset.id,
+              acceptUnverifiedSchema: this.schemaOverride,
             })
           : Promise.resolve(null),
         wantUncertainty
@@ -272,11 +333,21 @@ class Workspace {
               layer: 'uncertainty',
               method: this.map.method,
               datasetId: dataset.id,
+              acceptUnverifiedSchema: this.schemaOverride,
+            })
+          : Promise.resolve(null),
+        wantBinary
+          ? api.mapField(this.project!.id, {
+              layer: 'binary',
+              method: this.map.method,
+              datasetId: dataset.id,
+              acceptUnverifiedSchema: this.schemaOverride,
             })
           : Promise.resolve(null),
       ]);
       if (hard) this.fieldCache.set(hardKey, hard);
       if (uncertainty) this.fieldCache.set(uncertaintyKey, uncertainty);
+      if (binary) this.fieldCache.set(binaryKey, binary);
       if (this.fieldCache.size > 8) {
         const oldest = this.fieldCache.keys().next().value;
         if (oldest !== undefined) this.fieldCache.delete(oldest);
@@ -284,9 +355,11 @@ class Workspace {
       this.field = {
         hard: hard ?? cachedHard ?? this.field.hard,
         uncertainty: uncertainty ?? cachedUncertainty ?? this.field.uncertainty,
+        binary: binary ?? cachedBinary ?? this.field.binary,
       };
     } catch (error) {
       this.fieldError = error instanceof Error ? error.message : String(error);
+      this.fieldErrorStatus = error instanceof ClientError ? error.status : 500;
     } finally {
       this.fieldLoading = false;
     }
@@ -304,6 +377,7 @@ class Workspace {
     resolution: 'patch' | 'pixel';
     evaluationStrategy: 'random' | 'spatial';
     modelType?: 'rf' | 'lightgbm';
+    acceptUnverifiedSchema?: boolean;
   }): Promise<RunView | null> {
     if (!this.project) return null;
     this.engineError = null;
@@ -316,7 +390,7 @@ class Workspace {
       this.runs = [run, ...this.runs.filter((item) => item.id !== run.id)];
       this.arena = { primary: run.id, challenger: this.arena.primary ?? this.runs[1]?.id ?? null };
       // A new run invalidates any map field painted from the previous one.
-      this.field = { hard: null, uncertainty: null };
+      this.field = { hard: null, uncertainty: null, binary: null };
       if (this.map.layers.classification || this.map.layers.uncertainty) void this.loadMapField();
       return run;
     } catch (error) {
@@ -337,6 +411,7 @@ class Workspace {
       const parsed = JSON.parse(raw) as Partial<ReviewState>;
       this.review = {
         batch: parsed.batch ?? null,
+        batchId: parsed.batchId ?? parsed.batch?.batchId ?? null,
         decisions: parsed.decisions ?? {},
         skipped: parsed.skipped ?? [],
       };
@@ -355,7 +430,23 @@ class Workspace {
   }
 
   setBatch(batch: QueryBatchView) {
-    this.review = { ...this.review, batch };
+    this.review = { ...this.review, batch, batchId: batch.batchId };
+    this.persistReview();
+  }
+
+  /**
+   * Point the workspace at a durable batch from the server.
+   *
+   * Submitted decisions come from the engine's query items; anything the browser
+   * merely drafted is dropped, because it was never submitted and pretending
+   * otherwise is exactly what this phase forbids.
+   */
+  loadBatch(batch: QueryBatchView, batchId: string, submitted: Record<string, string>) {
+    const decisions: ReviewState['decisions'] = {};
+    for (const [sampleId, className] of Object.entries(submitted)) {
+      decisions[sampleId] = { className, at: new Date().toISOString(), sampleId };
+    }
+    this.review = { batch, batchId, decisions, skipped: [] };
     this.persistReview();
   }
 

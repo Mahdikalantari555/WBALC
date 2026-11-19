@@ -60,12 +60,27 @@ def geotiff_bytes() -> bytes:
 
 @pytest.fixture()
 def project(client) -> dict:
+    # A generic two-class project: it opts out of the WBALC water taxonomy on
+    # purpose, so these legacy-path tests keep their own class list. Water-taxonomy
+    # projects are created explicitly in the Phase 1 tests.
     resp = client.post(
         "/projects",
-        json={"name": "Demo", "classes": ["water", "vegetation"], "description": "test", "status": "active"},
+        json={
+            "name": "Demo",
+            "classes": ["water", "vegetation"],
+            "description": "test",
+            "status": "active",
+            "generic_classes": True,
+        },
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
+
+
+# The shared fixture declares its bands explicitly: a raster with unnamed bands
+# is now "schema undeclared", and training/inference on it requires an override.
+# Tests that want the undeclared path upload without these fields on purpose.
+BAND_NAMES = "blue,green,red,nir"
 
 
 @pytest.fixture()
@@ -73,6 +88,7 @@ def dataset(client, project, geotiff_bytes) -> dict:
     resp = client.post(
         f"/projects/{project['id']}/upload",
         files={"file": ("scene.tif", geotiff_bytes, "image/tiff")},
+        data={"band_names": BAND_NAMES, "sensor": "sentinel-2"},
     )
     assert resp.status_code == 201, resp.text
     return resp.json()

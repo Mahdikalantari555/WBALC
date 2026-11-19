@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -95,6 +96,7 @@ async def register_scene(
     platform: str | None = Form(default=None, max_length=100),
     product_type: str | None = Form(default=None, max_length=100),
     product_level: str | None = Form(default=None, max_length=50),
+    band_names: str | None = Form(default=None),
     polarization: str | None = Form(default=None),
     acquisition_mode: str | None = Form(default=None, max_length=30),
     orbit_direction: Literal["ascending", "descending"] | None = Form(default=None),
@@ -121,6 +123,13 @@ async def register_scene(
         if any(value <= 0 for value in native_resolution.values()):
             raise HTTPException(status_code=422, detail="native band resolutions must be positive")
 
+    # Optional explicit band names: a product whose bands are undescribed cannot
+    # otherwise prove its band identity, and a band-count match is not identity.
+    named_bands = None
+    if band_names:
+        named_bands = [token.strip() for token in band_names.split(",")]
+        if not all(named_bands):
+            raise HTTPException(status_code=422, detail="band_names must not contain empty entries")
     polarizations = None
     if polarization:
         polarizations = sorted({token.strip().upper() for token in polarization.split(",") if token.strip()})
@@ -135,12 +144,14 @@ async def register_scene(
 
     destination = (project_dir(settings, "uploads", project_id) / unique_name(filename)).resolve()
     size = 0
+    digest = hashlib.sha256()
     try:
         async with await anyio.open_file(destination, "wb") as output:
             while chunk := await file.read(CHUNK_BYTES):
                 size += len(chunk)
                 if size > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail="Upload exceeds configured size limit")
+                digest.update(chunk)
                 await output.write(chunk)
     except HTTPException:
         destination.unlink(missing_ok=True)
@@ -160,6 +171,18 @@ async def register_scene(
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if named_bands is not None:
+        if len(named_bands) != raster_metadata["band_count"]:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"band_names lists {len(named_bands)} names but the raster has "
+                    f"{raster_metadata['band_count']} bands"
+                ),
+            )
+        raster_metadata["band_names"] = named_bands
+
     scene = Scene(
         project_id=project_id,
         acquisition_datetime=acquired,
@@ -169,6 +192,8 @@ async def register_scene(
         product_level=product_level,
         source_filename=filename,
         storage_path=str(destination),
+        content_sha256=digest.hexdigest(),
+        size_bytes=size,
         polarization=polarizations,
         acquisition_mode=acquisition_mode,
         orbit_direction=orbit_direction,

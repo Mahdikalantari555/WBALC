@@ -175,6 +175,8 @@ def save_checkpoint(
     stride: int,
     bands: int,
     resolution: str = "patch",
+    band_schema: dict | None = None,
+    taxonomy: dict | None = None,
 ) -> None:
     if resolution not in {"patch", "pixel"}:
         raise TrainingError("resolution must be 'patch' or 'pixel'")
@@ -196,6 +198,11 @@ def save_checkpoint(
                 "bands": bands,
                 "resolution": resolution,
                 "feature_schema": feature_schema,
+                # Ordered band identity (or an explicit, recorded absence of one).
+                "band_schema": band_schema,
+                # Class semantics frozen at training time (taxonomy version,
+                # class order, label crosswalk, binary interpretation).
+                "taxonomy": taxonomy,
                 "n_features": feature_count(bands, feature_schema),
                 "format": CHECKPOINT_FORMAT,
             },
@@ -292,6 +299,7 @@ def validate_checkpoint(data) -> dict:
         resolution=resolution,
         feature_schema=feature_schema,
         n_features=expected_features,
+        taxonomy=data.get("taxonomy"),
         legacy=legacy,
         iteration=int(data["iteration"]),
         bands=int(data["bands"]),

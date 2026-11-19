@@ -4,18 +4,22 @@ import { fail, ok } from '$lib/server/http';
 import { rsalPost, type RsalQueryResponse } from '$lib/server/rsal';
 
 interface Body {
-  strategy?: 'uncertainty' | 'diversity' | 'hybrid' | 'som';
+  strategy?: 'uncertainty' | 'diversity' | 'hybrid' | 'som' | 'random';
   method?: 'least_confidence' | 'margin' | 'entropy';
   batchSize?: number;
   datasetId?: string | null;
+  /** Only meaningful for the random baseline; the engine records the seed. */
+  seed?: number | null;
+  note?: string | null;
 }
 
 /**
  * POST /api/projects/{id}/query — request one active-learning batch.
  *
- * The engine is stateless here, so the returned batch becomes the browser-side
- * review queue (persisted per project). Strategies that need a model surface the
- * engine's own 409/422 `detail` verbatim.
+ * The engine persists the batch and its items, so the returned `batchId` is the
+ * durable identity of this queue. The browser copy is only a cache: it can be
+ * reloaded from `/api/projects/{id}/queries/{batchId}` in any session.
+ * Strategies that need a model surface the engine's own 409/422 `detail`.
  */
 export const POST: RequestHandler = async ({ params, request }) => {
   try {
@@ -26,6 +30,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
       batch_size: Math.min(200, Math.max(1, Number(body.batchSize ?? 20))),
       dataset_id: body.datasetId ? Number(body.datasetId) : null,
       exclude_labeled: true,
+      ...(body.seed != null && Number.isFinite(Number(body.seed))
+        ? { seed: Math.max(0, Math.trunc(Number(body.seed))) }
+        : {}),
+      ...(body.note ? { note: String(body.note).slice(0, 2000) } : {}),
     });
     return ok(toQueryBatch(response));
   } catch (error) {

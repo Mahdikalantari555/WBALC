@@ -59,6 +59,7 @@ def _nodata_dataset(client, project_id: int) -> dict:
     resp = client.post(
         f"/projects/{project_id}/upload",
         files={"file": ("collar.tif", buffer.getvalue(), "image/tiff")},
+        data={"band_names": "blue,green,red,nir", "sensor": "sentinel-2"},
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -225,7 +226,7 @@ class TestReadOnlyPaths:
     def test_export_listing_collapses_duplicates(self, client, project, dataset, labeled):
         _train(client, project["id"])
         for _ in range(3):
-            client.post(f"/projects/{project['id']}/predict", json={})
+            client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]})
         rows = client.get(f"/projects/{project['id']}/exports").json()
         keys = [(r["dataset_id"], r["type"], r["method"]) for r in rows]
         assert len(keys) == len(set(keys)), keys
@@ -367,6 +368,7 @@ class TestExports:
         ds = client.post(
             f"/projects/{project['id']}/upload",
             files={"file": ("edge.tif", buffer.getvalue(), "image/tiff")},
+            data={"band_names": "blue,green,red,nir", "sensor": "sentinel-2"},
         ).json()
         labels = []
         for row in range(9):
@@ -471,7 +473,7 @@ class TestExports:
 class TestPredictAugmentation:
     def test_predict_includes_uncertainty_and_validity(self, client, project, dataset, labeled):
         _train(client, project["id"])
-        body = client.post(f"/projects/{project['id']}/predict", json={}).json()
+        body = client.post(f"/projects/{project['id']}/predict", json={"dataset_id": dataset["id"]}).json()
         assert body["uncertainty_method"] == "entropy"
         assert np.shape(body["uncertainty_map"]) == (8, 8)
         assert np.shape(body["valid_map"]) == (8, 8)
@@ -481,7 +483,8 @@ class TestPredictAugmentation:
     def test_include_maps_false_omits_uncertainty(self, client, project, dataset, labeled):
         _train(client, project["id"])
         body = client.post(
-            f"/projects/{project['id']}/predict", json={"include_maps": False}
+            f"/projects/{project['id']}/predict",
+            json={"dataset_id": dataset["id"], "include_maps": False},
         ).json()
         assert body["uncertainty_map"] is None
 

@@ -254,9 +254,39 @@ def _base_tags(classes: list[str], grid: dict | None, resolution: str | None) ->
     tags = {"classes": json.dumps(classes)}
     if grid is not None:
         tags["grid"] = json.dumps(grid)
+        # Provenance a downstream consumer can read without parsing the grid blob.
+        for key in (
+            "study_area_applied",
+            "study_area_note",
+            "band_schema_verified",
+            "band_schema_reason",
+            "schema_override",
+            "training_run_id",
+        ):
+            if key in grid and grid[key] is not None:
+                tags[key] = str(grid[key]).lower() if isinstance(grid[key], bool) else str(grid[key])
     if resolution is not None:
         tags["resolution"] = resolution
     return tags
+
+
+def _paint_cells(
+    values: np.ndarray,
+    valid: np.ndarray,
+    grid: PatchGrid,
+    height: int,
+    width: int,
+    nodata_value,
+    dtype,
+) -> np.ndarray:
+    """Replicate per-cell values over their true pixel windows on a full canvas."""
+    rows, cols = values.shape
+    canvas = np.full((height, width), nodata_value, dtype=dtype)
+    for row_idx, col_idx, y0, x0, cell_h, cell_w in _cell_windows(grid, rows, cols):
+        if not valid[row_idx, col_idx]:
+            continue
+        canvas[y0 : y0 + cell_h, x0 : x0 + cell_w] = values[row_idx, col_idx]
+    return canvas
 
 
 def _cell_windows(grid: PatchGrid, rows: int, cols: int):
@@ -645,3 +675,185 @@ def validate_export_grid(
         for candidate_path in candidate_paths:
             with rasterio.open(candidate_path) as candidate:
                 validate_grid_compatibility(reference, candidate, window=window)
+
+
+# --------------------------------------------- derived binary water product
+def export_binary_geotiff(
+    path: str | Path,
+    binary: np.ndarray,
+    crs: str | None,
+    transform: Affine,
+    meta: dict | None = None,
+    valid: np.ndarray | None = None,
+) -> None:
+    """Categorical derived product: 1 = water, 0 = other, nodata = invalid.
+
+    This never replaces the three-class map. ``meta`` records which
+    interpretation produced it and from which three-class run.
+    """
+    data = binary.astype(np.uint16, copy=True)
+    if valid is not None:
+        if valid.size != data.size:
+            raise ValueError("Binary validity mask shape does not match output grid")
+        data[~np.asarray(valid, dtype=bool).reshape(data.shape)] = NODATA
+
+    def _write(tmp: Path) -> None:
+        with rasterio.open(
+            tmp,
+            "w",
+            driver="GTiff",
+            height=data.shape[0],
+            width=data.shape[1],
+            count=1,
+            dtype="uint16",
+            crs=crs,
+            transform=transform,
+            nodata=NODATA,
+            compress="deflate",
+        ) as dst:
+            dst.write(data, 1)
+            dst.update_tags(
+                classes=json.dumps(["non_water", "water"]),
+                interpretation=(meta or {}).get("interpretation", ""),
+                source_classes=json.dumps((meta or {}).get("source_classes", [])),
+                mapping=json.dumps((meta or {}).get("mapping", {})),
+                source_training_run_id=str((meta or {}).get("training_run_id", "")),
+                taxonomy_version=str((meta or {}).get("taxonomy_version", "")),
+                derived="true",
+                description=(
+                    "DERIVED binary water product (pixel value 1 = water, 0 = other). "
+                    "The three-class classification map is the source product and is "
+                    "not modified by this file; see the mapping/source_classes tags."
+                ),
+            )
+            dst.write_colormap(1, {0: (92, 187, 150, 255), 1: (58, 125, 208, 255)})
+
+    _atomic_write(path, _write)
+
+
+def export_binary_probability_geotiff(
+    path: str | Path,
+    probability: np.ndarray,
+    crs: str | None,
+    transform: Affine,
+    meta: dict | None = None,
+    valid: np.ndarray | None = None,
+) -> None:
+    """Derived P(water) in [0, 1]: a subset sum of the three-class probabilities."""
+    data = np.asarray(probability, dtype=np.float32)
+    if valid is not None:
+        if valid.size != data.size:
+            raise ValueError("Binary validity mask shape does not match output grid")
+        data = data.copy()
+        data[~np.asarray(valid, dtype=bool).reshape(data.shape)] = PROBABILITY_NODATA
+
+    def _write(tmp: Path) -> None:
+        with rasterio.open(
+            tmp,
+            "w",
+            driver="GTiff",
+            height=data.shape[0],
+            width=data.shape[1],
+            count=1,
+            dtype="float32",
+            crs=crs,
+            transform=transform,
+            nodata=PROBABILITY_NODATA,
+            compress="deflate",
+        ) as dst:
+            dst.write(data, 1)
+            dst.set_band_description(1, "P(water)")
+            dst.update_tags(
+                classes=json.dumps(["non_water", "water"]),
+                interpretation=(meta or {}).get("interpretation", ""),
+                source_classes=json.dumps((meta or {}).get("source_classes", [])),
+                mapping=json.dumps((meta or {}).get("mapping", {})),
+                source_training_run_id=str((meta or {}).get("training_run_id", "")),
+                derived="true",
+                description=(
+                    "DERIVED P(water), the sum of the three-class probabilities mapped "
+                    "to water; nodata marks invalid cells"
+                ),
+            )
+
+    _atomic_write(path, _write)
+
+
+def export_binary_cells_geotiff(
+    path: str | Path,
+    binary: np.ndarray,
+    valid: np.ndarray,
+    grid: PatchGrid,
+    crs: str | None,
+    transform: Affine,
+    height: int,
+    width: int,
+    meta: dict | None = None,
+) -> None:
+    """Derived binary product for patch-cell output, painted like the source cells."""
+    canvas = _paint_cells(binary, valid, grid, height, width, NODATA, np.uint16)
+
+    def _write(tmp: Path) -> None:
+        with rasterio.open(
+            tmp, "w", driver="GTiff", height=height, width=width, count=1,
+            dtype="uint16", crs=crs, transform=transform, nodata=NODATA,
+            compress="deflate",
+        ) as dst:
+            dst.write(canvas, 1)
+            dst.update_tags(
+                classes=json.dumps(["non_water", "water"]),
+                interpretation=(meta or {}).get("interpretation", ""),
+                source_classes=json.dumps((meta or {}).get("source_classes", [])),
+                mapping=json.dumps((meta or {}).get("mapping", {})),
+                source_training_run_id=str((meta or {}).get("training_run_id", "")),
+                taxonomy_version=str((meta or {}).get("taxonomy_version", "")),
+                resolution="patch-cells",
+                derived="true",
+                description=(
+                    "DERIVED binary water product painted per patch cell over its true "
+                    "pixel window (nearest neighbour, never interpolated); the "
+                    "three-class map is the source product"
+                ),
+            )
+            dst.write_colormap(1, {0: (92, 187, 150, 255), 1: (58, 125, 208, 255)})
+
+    _atomic_write(path, _write)
+
+
+def export_binary_probability_cells_geotiff(
+    path: str | Path,
+    probability: np.ndarray,
+    valid: np.ndarray,
+    grid: PatchGrid,
+    crs: str | None,
+    transform: Affine,
+    height: int,
+    width: int,
+    meta: dict | None = None,
+) -> None:
+    """Derived P(water) painted per patch cell on the source grid."""
+    canvas = _paint_cells(probability, valid, grid, height, width, PROBABILITY_NODATA, np.float32)
+
+    def _write(tmp: Path) -> None:
+        with rasterio.open(
+            tmp, "w", driver="GTiff", height=height, width=width, count=1,
+            dtype="float32", crs=crs, transform=transform,
+            nodata=PROBABILITY_NODATA, compress="deflate",
+        ) as dst:
+            dst.write(canvas, 1)
+            dst.set_band_description(1, "P(water)")
+            dst.update_tags(
+                classes=json.dumps(["non_water", "water"]),
+                interpretation=(meta or {}).get("interpretation", ""),
+                source_classes=json.dumps((meta or {}).get("source_classes", [])),
+                mapping=json.dumps((meta or {}).get("mapping", {})),
+                source_training_run_id=str((meta or {}).get("training_run_id", "")),
+                resolution="patch-cells",
+                derived="true",
+                description=(
+                    "DERIVED P(water) per patch cell (sum of three-class probabilities "
+                    "mapped to water), painted over the cell's pixel window"
+                ),
+            )
+
+    _atomic_write(path, _write)

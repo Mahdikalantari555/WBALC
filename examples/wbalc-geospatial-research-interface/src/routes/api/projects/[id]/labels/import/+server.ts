@@ -27,7 +27,8 @@ interface ImportResult {
  *
  * Features are sent to the engine one at a time in *map* space with
  * `coordinate_crs: EPSG:4326`, so the engine performs the reprojection into the
- * dataset CRS with rasterio. Features whose class is not in the project taxonomy
+ * dataset CRS with rasterio. Features whose class has no mapping in the project's
+ * taxonomy (including its configured aliases)
  * are skipped and reported; nothing is silently recoded, and `reed` is never
  * treated as a synonym for emergent vegetation.
  */
@@ -57,8 +58,22 @@ export const POST: RequestHandler = async ({ params, request }) => {
     const classProperty = body.classProperty || 'class';
     const coordinateCrs = body.coordinateCrs === 'dataset' ? undefined : 'EPSG:4326';
     const mapping = body.mapping ?? {};
-    const project = await rsalGet<{ classes: string[] }>(`/projects/${params.id}`);
+    const project = await rsalGet<{
+      classes: string[];
+      taxonomy?: { crosswalk?: Record<string, string>; version?: string } | null;
+    }>(`/projects/${params.id}`);
     const known = new Set(project.classes);
+    // The project's own alias crosswalk is the only synonym source: an import
+    // never guesses that "reed" means emergent vegetation unless it is configured.
+    const crosswalk = project.taxonomy?.crosswalk ?? {};
+    const slug = (value: string) =>
+      value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    const resolve = (value: string): string | null => {
+      const mapped = mapping[value] ?? value;
+      if (known.has(mapped)) return mapped;
+      const canonical = crosswalk[slug(mapped)];
+      return canonical && known.has(canonical) ? canonical : null;
+    };
     const result: ImportResult = { imported: 0, skipped: 0, errors: [] };
 
     for (const [index, raw] of features.entries()) {
@@ -74,11 +89,11 @@ export const POST: RequestHandler = async ({ params, request }) => {
         continue;
       }
       const rawValue = feature.properties?.[classProperty];
-      const className = typeof rawValue === 'string' ? mapping[rawValue] ?? rawValue : '';
-      if (!className || !known.has(className)) {
+      const className = typeof rawValue === 'string' ? resolve(rawValue) : null;
+      if (!className) {
         result.skipped += 1;
         result.errors.push(
-          `Feature ${index}: class '${rawValue ?? 'unset'}' is not in the project taxonomy (${project.classes.join(', ')}).`,
+          `Feature ${index}: class '${rawValue ?? 'unset'}' has no mapping in this project's taxonomy (${project.classes.join(', ')}).`,
         );
         continue;
       }

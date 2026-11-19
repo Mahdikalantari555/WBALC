@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import anyio
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import delete as sa_delete, select
 
 from ..config import Settings
 from ..models import Dataset, Export, Label
 from ..schemas import DatasetOut
-from ..services.raster_service import RasterError, extract_metadata, make_grid
+from ..services.raster_service import (
+    RasterError,
+    extract_band_identity,
+    extract_metadata,
+    make_grid,
+)
+from ..services.schema_service import build_band_schema
 from ..storage import project_dir, unique_name
 from .deps import SessionDep, SettingsDep, get_dataset, get_project
 
@@ -26,7 +33,10 @@ def dataset_out(dataset: Dataset, settings: Settings) -> DatasetOut:
     """DatasetOut enriched with computed size and patch-grid metadata."""
     out = DatasetOut.model_validate(dataset)
     path = Path(dataset.path)
-    out.size_bytes = path.stat().st_size if path.exists() else 0
+    # `size_bytes` is the recorded size of the bytes at registration; it is not
+    # recomputed as "whatever is on disk now".
+    if dataset.size_bytes is None:
+        out.size_bytes = path.stat().st_size if path.exists() else 0
     grid = make_grid(dataset.height, dataset.width, settings.patch_size, settings.resolved_stride())
     rows, cols = grid.shape
     out.patch_grid = {
@@ -41,8 +51,19 @@ def dataset_out(dataset: Dataset, settings: Settings) -> DatasetOut:
 
 @router.post("/upload", response_model=DatasetOut, status_code=201)
 async def upload_geotiff(
-    project_id: int, file: UploadFile, session: SessionDep, settings: SettingsDep
+    project_id: int,
+    file: UploadFile,
+    session: SessionDep,
+    settings: SettingsDep,
+    band_names: str | None = Form(default=None),
+    sensor: str | None = Form(default=None),
 ) -> Dataset:
+    """Store one GeoTIFF and record the band identity it declares.
+
+    `band_names` (comma-separated) and `sensor` are optional *explicit* caller
+    declarations for files whose bands are unnamed; without them the dataset is
+    stored as "schema undeclared" and inference against it requires an override.
+    """
     await get_project(session, project_id)
 
     filename = file.filename or "upload.tif"
@@ -53,12 +74,16 @@ async def upload_geotiff(
     dest = dest_dir / unique_name(filename)
 
     size = 0
+    # The hash is computed from the same bytes that are written, so it describes
+    # the stored file rather than a second read of it.
+    digest = hashlib.sha256()
     try:
         async with await anyio.open_file(dest, "wb") as out:
             while chunk := await file.read(CHUNK):
                 size += len(chunk)
                 if size > settings.max_upload_bytes:
                     raise HTTPException(status_code=413, detail="Upload exceeds size limit")
+                digest.update(chunk)
                 await out.write(chunk)
     except HTTPException:
         dest.unlink(missing_ok=True)
@@ -76,10 +101,40 @@ async def upload_geotiff(
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    declared_names = None
+    source = "raster-metadata"
+    if band_names and band_names.strip():
+        declared_names = [part.strip() for part in band_names.split(",")]
+        if len(declared_names) != meta["bands"]:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"band_names declares {len(declared_names)} names but the raster has "
+                    f"{meta['bands']} bands"
+                ),
+            )
+        source = "request"
+    else:
+        try:
+            identity = await anyio.to_thread.run_sync(extract_band_identity, dest)
+        except RasterError as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        declared_names = identity["band_names"]
+
     dataset = Dataset(
         project_id=project_id,
         filename=filename,
         path=str(dest),
+        content_sha256=digest.hexdigest(),
+        size_bytes=size,
+        band_schema=build_band_schema(
+            band_count=meta["bands"],
+            band_names=declared_names,
+            sensor=(sensor.strip() if sensor and sensor.strip() else None),
+            source=source,
+        ),
         **meta,
     )
     session.add(dataset)

@@ -73,6 +73,7 @@ class TestSceneFoundation:
         project = created.json()
         assert project["classes"] == ["open_water", "emergent_vegetation", "land"]
         assert project["classification_config"] == {
+            "label_aliases": {},
             "internal_classes": ["open_water", "emergent_vegetation", "land"],
             "binary_output_interpretation": "water_vs_non_water",
         }
@@ -251,9 +252,57 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
     with TestClient(app) as client:
         assert client.get("/projects/1").json()["classes"] == ["water", "land"]
     connection = sqlite3.connect(db_path)
-    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [(1,)]
+    # Every additive migration must have run exactly once, and running the app a
+    # second time must not add duplicates.
+    assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (5,),
+        (6,),
+        (7,),
+        (8,),
+        (9,),
+        (10,),
+    ]
     columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     assert {"study_area_geometry", "study_area_crs", "classification_config"}.issubset(columns)
+    dataset_columns = {row[1] for row in connection.execute("PRAGMA table_info(datasets)")}
+    assert "band_schema" in dataset_columns
+    # Phase 1 additions are additive too, and the legacy project did not acquire
+    # water semantics it never opted into.
+    assert "taxonomy" in columns
+    # Phase 5 tables exist and are equally additive.
+    research_tables = {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert {
+        "evaluation_protocols",
+        "evaluation_results",
+        "reference_areas",
+        "research_plans",
+        "research_reports",
+    }.issubset(research_tables)
+    assert "submitted_class_name" in {
+        row[1] for row in connection.execute("PRAGMA table_info(labels)")
+    }
+    assert connection.execute("SELECT taxonomy FROM projects").fetchone() == (None,)
+    # Phase 2 adds durable sampling records; the legacy label keeps manual
+    # provenance (no batch link is invented for it).
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"query_batches", "query_items"}.issubset(tables)
+    # Phase 3 lineage: legacy rows keep NULL content identities rather than being
+    # hashed after the fact.
+    dataset_columns = {row[1] for row in connection.execute("PRAGMA table_info(datasets)")}
+    assert {"content_sha256", "size_bytes"}.issubset(dataset_columns)
+    run_columns = {row[1] for row in connection.execute("PRAGMA table_info(training_runs)")}
+    assert {"manifest", "checkpoint_sha256", "experiment_id"}.issubset(run_columns)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "experiments" in tables
+    label_columns = {row[1] for row in connection.execute("PRAGMA table_info(labels)")}
+    assert {"query_batch_id", "query_item_id"}.issubset(label_columns)
+    assert connection.execute("SELECT COUNT(*) FROM labels WHERE query_item_id IS NOT NULL").fetchone() == (0,)
     connection.close()
 
 
