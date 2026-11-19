@@ -19,6 +19,7 @@ Verification date: 2026-11-19 (sandbox clock) — synthetic data only.
 | Area error | `ReferenceArea` records operator-supplied truth (area + source + method + optional uncertainty, `GET/POST .../reference-areas`). `GET .../area-error` answers **409** until both a reference area *and* a classified scene exist. The engine's own map is never used as truth. |
 | Scene spread | `GET .../scene-spread` aggregates per-scene values, refuses to pool pixels (409 "nothing to aggregate") and reports the resampling unit. |
 | AL / plan comparisons | `ResearchPlan` declares factors, levels, repetitions, comparison metric and holdout protocol **before** runs. `POST .../plans/compare` returns `shared`/`differing` factors, per-result values and a `paired` verdict — `false` whenever the results were not scored on the same persisted split, in which case the response says so in `caveats`. |
+| Title in the digest | `finalize_bundle` attaches the document title **before** hashing: two bundles that differ only in their title used to share a digest, which made the digest a claim about the records rather than about the artifact. Found by the integrated test. |
 | Report bundle | `app/services/report_service.py`: JSON + CSV + Markdown from stored Phase 3/4/5 records, each artifact with `sha256` + `size_bytes`, plus a canonical `digest`. `_canonical` strips `generated_at`/`created_at`/`path`/`storage_reference` **and coerces `datetime`/`date`/`Decimal`/numpy scalars** to JSON-native values, so regeneration hashes equally and the bundle can be stored in a JSON column. |
 | Download integrity | `GET .../reports/{id}/files/{kind}` re-verifies the stored checksum before streaming; a tampered file → `409` and the record is untouched. |
 | Software vs science | `GET .../status` returns `software_validation` (tests on synthetic data) next to `scientific_validity: "not established"`, with counts and a plain-language detail paragraph. The distinction is in the payload, not only in the docs. |
@@ -76,6 +77,8 @@ All 33 tests live in `tests/test_research_phase5.py`; names below are verbatim.
   `test_sample_records_keep_the_acquisition_group_and_drop_non_points`.
 - **Plan/ablation control** — `test_plans_record_factors_and_refuse_a_fake_paired_comparison`.
 - **Report bundle** — `test_report_bundle_is_generated_with_three_artifacts_and_a_digest`,
+  `tests/test_end_to_end_workflow.py::test_offline_scene_to_report_workflow` (title changes the digest,
+  identical records reproduce it),
   `test_bundle_digest_is_stable_across_regeneration`,
   `test_bundle_excludes_legacy_runs_and_names_why`,
   `test_csv_lists_one_row_per_class_metric`,

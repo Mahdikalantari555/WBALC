@@ -703,6 +703,10 @@ openspec/            # spec-driven change proposals + capability specs
 .venv/bin/python -m pytest
 ```
 
+`tests/test_end_to_end_workflow.py` is the integrated gate: one synthetic scene from
+ingest through query/labels, training, inference, lineage, temporal analysis and fusion
+to a held-out evaluation and a regenerable report bundle.
+
 The suite now covers project CRUD, legacy dataset workflows, labels, Active
 Learning, training/inference/exports, synthetic multi-temporal scenes (Sentinel-1/2
 metadata, NoData/masks, optional dates, grid differences, ordering, isolated deletion,

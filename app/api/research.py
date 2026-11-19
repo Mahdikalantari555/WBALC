@@ -60,8 +60,13 @@ from ..services.research_service import (
     score_protocol,
     split_for_project,
 )
-from ..services.report_service import bundle_csv, bundle_json, bundle_markdown, build_bundle
-from ..services.lineage_service import digest
+from ..services.report_service import (
+    bundle_csv,
+    bundle_json,
+    bundle_markdown,
+    build_bundle,
+    finalize_bundle,
+)
 from ..storage import project_dir
 from .deps import SessionDep, SettingsDep, get_project, project_labels
 
@@ -742,7 +747,7 @@ async def create_report(
     """Generate a checksum-linked JSON/CSV/Markdown bundle from stored records."""
     bundle, _ = await _report_payload(session, settings, project_id)
     title = payload.title or f"Research report — project #{project_id}"
-    bundle["title"] = title
+    bundle = finalize_bundle(bundle, title)
 
     out_dir = project_dir(settings, "reports", project_id)
     tag = uuid.uuid4().hex[:8]

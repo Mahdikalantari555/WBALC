@@ -54,6 +54,17 @@ def _canonical(value: Any) -> Any:
     return value
 
 
+def finalize_bundle(bundle: dict, title: str) -> dict:
+    """Attach the document title and (re)compute the canonical digest.
+
+    The title is part of the document, so it has to be part of the digest: two
+    bundles that differ only in their title are not the same artifact.
+    """
+    bundle["title"] = title
+    bundle["digest"] = digest(_canonical(bundle))
+    return bundle
+
+
 def build_bundle(
     *,
     project: dict,
