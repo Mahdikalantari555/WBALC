@@ -22,7 +22,7 @@ export const UNAVAILABLE_MESSAGE =
   'The WBALC backend is unreachable. Start it with `uvicorn app.main:app --host 0.0.0.0 --port 8000` (or `docker compose up`), then check RSAL_API_URL.';
 
 function baseUrl(): string {
-  return (env.RSAL_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
+  return (env.RSAL_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
 }
 
 export function rsalUrl(path: string): string {

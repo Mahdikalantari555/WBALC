@@ -14,8 +14,8 @@ $LogDir = Join-Path $RunDir "logs"
 $ApiPort = if ($env:API_PORT) { $env:API_PORT } else { "8000" }
 $FrontendPort = if ($env:FRONTEND_PORT) { $env:FRONTEND_PORT } else { "3000" }
 $FrontendDir = Join-Path $Root "frontend"
-$EngineHealth = "http://localhost:$ApiPort/health"
-$FrontendHealth = "http://localhost:$FrontendPort/api/health"
+$EngineHealth = "http://127.0.0.1:$ApiPort/health"
+$FrontendHealth = "http://127.0.0.1:$FrontendPort/api/health"
 $EngineIdentity = Join-Path $RunDir "engine-python.txt"
 
 function Say($m) { Write-Host $m }
@@ -118,9 +118,7 @@ function Test-PythonDependencies($python) {
 function Ensure-Node($dir) {
     if (!(Get-Command node.exe -ErrorAction SilentlyContinue) -or !(Get-Command npm.cmd -ErrorAction SilentlyContinue)) { Die "Node.js and npm are required for the workspace" }
     $nodeVersion = & node.exe --version
-    $packageHash = (Get-FileHash (Join-Path $dir "package.json")).Hash
-    $lockHash = (Get-FileHash (Join-Path $dir "package-lock.json")).Hash
-    $fingerprint = "$nodeVersion $packageHash $lockHash"
+    $fingerprint = (& node.exe -e "const fs=require('node:fs'),p=require('node:path'),h=require('node:crypto').createHash('sha256');for(const f of ['package.json','package-lock.json'])h.update(fs.readFileSync(p.join(process.argv[1],f)));console.log(h.update(process.version).digest('hex'))" $dir).Trim()
     $stamp = Join-Path $dir "node_modules\.wbalc-deps-windows"
     $previous = Get-Content -LiteralPath $stamp -ErrorAction SilentlyContinue
     if ($previous -ne $fingerprint) {
