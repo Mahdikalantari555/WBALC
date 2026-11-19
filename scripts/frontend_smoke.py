@@ -56,6 +56,11 @@ def make_geotiff() -> bytes:
         transform=from_origin(500000, 4649776, 10, 10),
     ) as dst:
         dst.write(data)
+        # Phase 0 refuses to train on rasters whose band identity cannot be
+        # proven, so a realistic fixture declares its bands (as a real Sentinel
+        # stack does) instead of relying on band count.
+        for index, name in enumerate(("blue", "green", "red", "nir"), start=1):
+            dst.set_band_description(index, name)
     return buf.getvalue()
 
 
@@ -87,6 +92,9 @@ def main() -> None:
         json={
             "name": "Smoke test project",
             "description": "frontend adapter e2e",
+            # A non-water class list is only accepted with generic_classes=true;
+            # without it the engine insists on the WBALC water taxonomy.
+            "genericClasses": True,
             "classes": [
                 {"id": "Water", "name": "Water", "color": "#5cbb96"},
                 {"id": "Vegetation", "name": "Vegetation", "color": "#e0a458"},

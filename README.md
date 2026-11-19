@@ -52,19 +52,55 @@ The database and storage directories are created on startup under `STORAGE_DIR`
 (default `./storage`). Configuration is via environment or `.env`
 (see [`.env.example`](.env.example)).
 
-## Quickstart (Docker)
+## Quickstart
+
+Pick one path. Both bring up the same services; only the launcher differs.
+
+### Everything in Docker
 
 ```bash
-docker compose up -d --build          # API on :8000 + TerraLab UI on :3000
-# Optional Postgres:
-docker compose --profile postgres up -d
-# ...and set DATABASE_URL=postgresql+asyncpg://rsal:rsal@db:5432/rsal on the api service
+./scripts/dev.sh up                 # engine :8000 + TerraLab UI :3000
+./scripts/dev.sh up --research      # ... plus the SvelteKit research workspace :5173
+./scripts/dev.sh up --postgres      # ... with Postgres instead of SQLite
+./scripts/dev.sh up --all --build   # both, forced rebuild
+
+./scripts/dev.sh ps                 # status + health per service
+./scripts/dev.sh logs api           # follow one service
+./scripts/dev.sh smoke              # run the smoke suites from the host
+./scripts/dev.sh down               # stop (data volumes are kept)
+./scripts/dev.sh down -v            # stop and delete the volumes
 ```
 
-Requires Docker with BuildKit (the default on Docker 23+ / Compose v2). The API
-image installs the fully pinned [`requirements.lock.txt`](requirements.lock.txt)
-for reproducible builds and includes `libgomp1` (needed by LightGBM). The
-frontend waits for the API healthcheck before starting.
+The script wraps `docker compose` and exists for the failure modes that a plain
+`up -d` hides: no daemon, a port already taken by a stale dev server, or
+`--postgres` without `DATABASE_URL` (which would silently leave the engine on
+SQLite). It checks those first and says what to fix. `docker compose up -d
+--build` still works if you prefer it — the profiles are the same:
+`--profile research`, `--profile postgres`.
+
+### Or natively, no Docker
+
+```bash
+./scripts/up.sh                    # engine :8000 + Next.js workspace :3000
+./scripts/up.sh --research         # ... plus the research workspace :5173
+./scripts/up.sh --research --dev   # uvicorn --reload + vite dev (HMR)
+./scripts/up.sh status
+./scripts/up.sh logs engine
+./scripts/up.sh down
+```
+
+This creates `.venv` if needed, waits for the engine's `/health` before starting
+any UI, writes pid files under `.run/` and one log per service. Use it in
+sandboxes without a Docker daemon, or when you want reload/HMR.
+
+Requires Docker with BuildKit (Docker 23+ / Compose v2) for the container path.
+The API image installs the fully pinned
+[`requirements.lock.txt`](requirements.lock.txt) for reproducible builds and
+includes `libgomp1` (needed by LightGBM — without it the container starts and
+`/health` passes, then the first LightGBM fit dies). The API healthcheck
+therefore also imports `lightgbm, sklearn, rasterio`, so a broken image fails at
+`up` instead of at the first request. Every UI waits for
+`condition: service_healthy`, not merely for the container to exist.
 
 ### Slow or restricted networks
 

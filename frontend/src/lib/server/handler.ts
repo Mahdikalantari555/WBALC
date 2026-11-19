@@ -380,10 +380,15 @@ export async function projectsHandler(request: NextRequest): Promise<NextRespons
           typeof c === 'string' ? c : (c.name ?? ''),
         )
       : [];
+    // `generic_classes` must be forwarded: without it the engine only accepts the
+    // WBALC water taxonomy (open_water, emergent_vegetation, land) and answers 422
+    // for any other class list, which is how a caller with its own classes used to
+    // fail at project creation.
     const created = await rsalPost<RsalProject>('/projects', {
       name: body.name,
       description: body.description ?? '',
       classes: names,
+      generic_classes: body.genericClasses ?? false,
       study_area_geometry: body.studyAreaGeometry ?? null,
       study_area_crs: body.studyAreaCrs ?? null,
       classification_config: body.classificationConfig
