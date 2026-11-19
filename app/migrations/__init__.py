@@ -12,6 +12,7 @@ from .v004_label_submitted_class import upgrade as upgrade_v4
 from .v005_run_trained_classes import upgrade as upgrade_v5
 from .v006_query_batches import upgrade as upgrade_v6
 from .v007_lineage import upgrade as upgrade_v7
+from .v008_scene_analysis import upgrade as upgrade_v8
 
 MIGRATIONS = [
     (1, upgrade_v1),
@@ -21,6 +22,7 @@ MIGRATIONS = [
     (5, upgrade_v5),
     (6, upgrade_v6),
     (7, upgrade_v7),
+    (8, upgrade_v8),
 ]
 
 

@@ -847,3 +847,206 @@ class SomClassifyResponse(BaseModel):
     clusters: list[SomClusterSummary]
     cluster_map: list[list[int]] | None = None
     exports: dict[str, str]
+
+
+# ---------------------------------------- scene classification / temporal (Phase 4)
+class PixelAreaMethod(BaseModel):
+    kind: Literal["projected", "geographic", "unknown", "other"]
+    supported: bool = True
+    unit: str | None = None
+    metres_per_unit: float | None = None
+    ellipsoid: str | None = None
+    pixel_area_m2: float | None = None
+    varies_by_row: bool | None = None
+    row_area_min_m2: float | None = None
+    row_area_max_m2: float | None = None
+    reason: str | None = None
+    note: str | None = None
+
+
+class ClassAreaOut(BaseModel):
+    class_index: int
+    class_name: str
+    valid_pixels: int
+    area_m2: float
+    area_ha: float
+    share_of_valid: float
+
+
+class WaterAreaOut(BaseModel):
+    water_classes: list[str]
+    area_m2: float
+    area_ha: float
+    valid_area_m2: float
+    share_of_valid: float
+
+
+class AreaSummaryOut(BaseModel):
+    available: bool = True
+    reason: str | None = None
+    per_class: list[ClassAreaOut] = []
+    valid_pixels: int = 0
+    invalid_pixels: int = 0
+    total_pixels: int = 0
+    coverage: float = 0.0
+    valid_area_m2: float = 0.0
+    valid_area_ha: float = 0.0
+    pixel_area_m2_mean: float = 0.0
+    method: PixelAreaMethod | None = None
+    water: WaterAreaOut | None = None
+
+
+class SceneClassificationRequest(BaseModel):
+    iteration: int | None = None
+    method: str = "entropy"
+    accept_unverified_schema: bool = False
+
+
+class SceneAnalysisSummary(BaseModel):
+    id: int
+    project_id: int
+    scene_id: int
+    training_run_id: int
+    resolution: str
+    method: str
+    classes: list[str]
+    grid: dict
+    contract: dict
+    study_area: dict
+    artifacts: dict
+    areas: AreaSummaryOut
+    lineage: dict
+    created_at: datetime
+
+
+class SceneClassificationResponse(BaseModel):
+    analysis: SceneAnalysisSummary
+    scene_id: int
+    acquisition_datetime: datetime | None = None
+    sensor: str | None = None
+
+
+class TransitionOut(BaseModel):
+    from_: str = Field(alias="from")
+    to: str
+    pixels: int
+    area_m2: float
+    area_ha: float
+
+    model_config = {"populate_by_name": True}
+
+
+class TransitionMatrixOut(BaseModel):
+    classes: list[str]
+    matrix: list[list[int]]
+    matrix_area_m2: list[list[float]]
+    joint_valid_pixels: int
+    joint_valid_area_m2: float
+    joint_valid_area_ha: float
+    changed_pixels: int
+    changed_area_m2: float
+    changed_area_ha: float
+    unchanged_pixels: int
+    changes: list[dict]
+    denominator: str
+
+
+class DateAreaPoint(BaseModel):
+    scene_id: int
+    analysis_id: int
+    acquisition_datetime: datetime | None = None
+    sensor: str | None = None
+    valid_area_m2: float
+    coverage: float
+    per_class: list[ClassAreaOut]
+    water: WaterAreaOut | None = None
+
+
+class TemporalSeriesOut(BaseModel):
+    project_id: int
+    dates: list[DateAreaPoint]
+    classes: list[str]
+    alignment: dict
+    caveats: list[str] = []
+
+
+class AlignmentRequest(BaseModel):
+    reference_scene_id: int
+    resampling: Literal["nearest"] = "nearest"
+
+
+class TemporalCompareRequest(BaseModel):
+    before_scene_id: int
+    after_scene_id: int
+    reference_scene_id: int | None = None
+    resampling: Literal["nearest"] = "nearest"
+
+
+class GridMismatchOut(BaseModel):
+    error: str
+    differences: list[dict]
+    reference_scene_id: int | None = None
+    candidate_scene_id: int | None = None
+    resampling_options: list[str] = []
+    hint: str
+
+
+class TemporalCompareResponse(BaseModel):
+    before_scene_id: int
+    after_scene_id: int
+    classes: list[str]
+    alignment: dict
+    transitions: TransitionMatrixOut
+    before: DateAreaPoint
+    after: DateAreaPoint
+    lineage: dict
+    caveats: list[str] = []
+
+
+class FusionRequest(BaseModel):
+    name: str = ""
+    rule: Literal[
+        "weighted_probability",
+        "weighted_vote",
+        "priority",
+        "early_fusion",
+        "raw_band_fusion",
+    ]
+    target_scene_id: int
+    analysis_ids: list[int]
+    weights: dict[str, float] = {}
+    priority: list[int] = []
+    missing_policy: Literal["require_all", "renormalise"] = "require_all"
+
+
+class FusionSourceOut(BaseModel):
+    analysis_id: int
+    scene_id: int
+    sensor: str
+    weight: float
+    grid_aligned: bool
+    analysis_digest: str | None = None
+
+
+class FusionResponse(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    rule: str
+    weights: dict
+    target_grid: dict
+    alignment: dict
+    missing_policy: str
+    sources: list[FusionSourceOut]
+    classes: list[str]
+    areas: AreaSummaryOut | None = None
+    agreement: dict
+    artifacts: dict
+    lineage: dict
+    created_at: datetime
+
+
+class EarlyFusionRejected(BaseModel):
+    error: str
+    detail: str
+    supported_rules: list[str]

@@ -626,6 +626,171 @@ def main() -> None:
             and scenes[0]["width"] in {256, 80},
         )
 
+        # ------------------------------------- Phase 4: scene classification
+        # Scene classification needs a *provable* band schema, so classify via the
+        # adapter for the scene registered with matching bands, and prove the
+        # refusal path for a scene whose bands are unnamed.
+        scene_ids = [scene["id"] for scene in scenes]
+        for scene_id in scene_ids:
+            r = client.post(f"/api/projects/{pid}/scenes/{scene_id}/classify", json={})
+            check(
+                f"scene {scene_id} classification is refused without a band schema",
+                r.status_code in {422, 409},
+                str(r.status_code),
+            )
+
+        # Re-register comparable scenes that declare their bands, so the temporal
+        # and fusion paths can actually run.
+        from io import BytesIO as _BytesIO
+
+        def scene_with_bands(height=64, width=64, seed=3):
+            rng = np.random.default_rng(seed)
+            data = np.zeros((4, height, width), dtype=np.float32)
+            data[:, :, : width // 2] = np.array([10, 20, 100, 120], dtype=np.float32)[:, None, None] + rng.normal(
+                0, 2, (4, height, width // 2)
+            )
+            data[:, :, width // 2 :] = np.array([80, 90, 30, 150], dtype=np.float32)[:, None, None] + rng.normal(
+                0, 2, (4, height, width - width // 2)
+            )
+            buffer = _BytesIO()
+            with rasterio.open(
+                buffer, "w", driver="GTiff", height=height, width=width, count=4,
+                dtype="float32", crs="EPSG:32631", transform=from_origin(500000, 4649776, 10, 10),
+            ) as dst:
+                dst.write(data)
+                for index, name in enumerate(["blue", "green", "red", "nir"], start=1):
+                    dst.set_band_description(index, name)
+            return buffer.getvalue()
+
+        named = []
+        for day, sensor, seed in (
+            ("2025-03-01T00:00:00Z", "Sentinel-2", 3),
+            ("2025-03-20T00:00:00Z", "Sentinel-1", 4),
+        ):
+            r = direct.post(
+                f"/projects/{pid}/scenes",
+                files={"file": (f"named-{day[:10]}.tif", scene_with_bands(seed=seed), "image/tiff")},
+                data={"sensor": sensor, "acquisition_datetime": day},
+            )
+            check(f"register named-band {sensor} scene", r.status_code == 201, r.text[:120])
+            named.append(r.json()["id"])
+
+        analyses = []
+        for scene_id in named:
+            r = client.post(
+                f"/api/projects/{pid}/scenes/{scene_id}/classify",
+                json={"acceptUnverifiedSchema": True},
+            )
+            check(f"classify scene {scene_id} via adapter", r.status_code == 201, r.text[:160])
+            if r.status_code != 201:
+                continue
+            analysis = r.json()
+            analyses.append(analysis)
+            check(
+                "analysis keeps grid, contract and checksummed artifacts",
+                analysis["sceneId"] == str(scene_id)
+                and analysis["nativeGrid"] is True
+                and analysis["crs"] == "EPSG:32631"
+                and analysis["width"] == 64
+                and set(analysis["artifacts"]) == {"hard", "probability", "uncertainty"}
+                and len(analysis["artifacts"]["hard"]["sha256"]) == 64,
+                f"{analysis['width']}x{analysis['height']} {list(analysis['artifacts'])}",
+            )
+            check(
+                "areas carry their method and a valid denominator",
+                analysis["areas"]["available"]
+                and analysis["areas"]["method"]["kind"] == "projected"
+                and analysis["areas"]["method"]["pixelAreaM2"] == 100
+                and analysis["areas"]["validAreaM2"] > 0
+                and abs(
+                    sum(entry["areaM2"] for entry in analysis["areas"]["perClass"])
+                    - analysis["areas"]["validAreaM2"]
+                )
+                < 1e-6,
+                f"{analysis['areas']['validAreaHa']} ha",
+            )
+
+        if analyses:
+            first = analyses[0]
+            response = client.get(
+                f"/api/projects/{pid}/analyses/{first['id']}/exports/hard"
+            )
+            check(
+                "scene export proxied and verified",
+                response.status_code == 200
+                and response.headers.get("x-rsal-export-integrity") == "verified"
+                and response.headers.get("x-rsal-export-sha256") == first["artifacts"]["hard"]["sha256"],
+                f"{len(response.content)} bytes",
+            )
+
+            r = client.get(f"/api/projects/{pid}/temporal/series")
+            check("temporal series via adapter", r.status_code == 200, r.text[:160])
+            if r.status_code == 200:
+                series = r.json()
+                check(
+                    "series is native and reports per-date areas",
+                    series["mode"] == "native"
+                    and len(series["dates"]) >= 1
+                    and all(date["validAreaM2"] > 0 for date in series["dates"]),
+                    f"{len(series['dates'])} dates",
+                )
+
+            if len(analyses) >= 2:
+                r = client.post(
+                    f"/api/projects/{pid}/temporal/compare",
+                    json={
+                        "beforeSceneId": analyses[0]["sceneId"],
+                        "afterSceneId": analyses[1]["sceneId"],
+                    },
+                )
+                check("compare dates via adapter", r.status_code == 200, r.text[:160])
+                if r.status_code == 200:
+                    comparison = r.json()
+                    check(
+                        "comparison reports no resampling and a joint denominator",
+                        comparison["aligned"] is False
+                        and comparison["jointValidAreaM2"] > 0
+                        and comparison["denominator"] == "pixels valid in both dates",
+                        f"{comparison['changedAreaHa']} ha changed",
+                    )
+
+                r = client.post(
+                    f"/api/projects/{pid}/fusion",
+                    json={
+                        "rule": "weighted_probability",
+                        "targetSceneId": analyses[0]["sceneId"],
+                        "analysisIds": [entry["id"] for entry in analyses[:2]],
+                        "weights": {"Sentinel-1": 0.5, "Sentinel-2": 0.5},
+                    },
+                )
+                check("late fusion via adapter", r.status_code == 201, r.text[:200])
+                if r.status_code == 201:
+                    fusion = r.json()
+                    check(
+                        "fusion keeps per-source lineage and agreement",
+                        len(fusion["sources"]) == 2
+                        and all(source["analysisDigest"] for source in fusion["sources"])
+                        and fusion["fusionDigest"] is not None
+                        and fusion["unanimousShare"] is not None,
+                        f"{fusion['rule']} aligned={fusion['aligned']}",
+                    )
+                    listed = client.get(f"/api/projects/{pid}/fusion")
+                    check("adapter lists fusions", listed.status_code == 200 and len(listed.json()) >= 1)
+
+                    rejected = client.post(
+                        f"/api/projects/{pid}/fusion",
+                        json={
+                            "rule": "raw_band_fusion",
+                            "targetSceneId": analyses[0]["sceneId"],
+                            "analysisIds": [entry["id"] for entry in analyses[:2]],
+                        },
+                    )
+                    check(
+                        "raw-band early fusion is rejected",
+                        rejected.status_code == 422,
+                        rejected.text[:120],
+                    )
+
         # ------------------------------------------------------- label import
         # A WGS84 feature derived from the dataset's own UTM origin.
         lon, lat = _utm_to_lonlat(500400.0, 4649500.0)

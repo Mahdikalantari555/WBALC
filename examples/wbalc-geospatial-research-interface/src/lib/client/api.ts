@@ -19,7 +19,11 @@ import type {
   QueryItemView,
   RunLineageView,
   RunView,
+  SceneAnalysisView,
   SceneView,
+  FusionView,
+  TemporalComparisonView,
+  TemporalSeriesView,
 } from '$lib/types';
 
 export class ClientError extends Error {
@@ -214,6 +218,66 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
+
+  /* ------------------------------------------- scene results & temporal (Phase 4) */
+
+  /** Classify one scene on its own grid; the engine records an immutable analysis. */
+  classifyScene: (
+    id: string,
+    sceneId: string,
+    body: { method?: string; acceptUnverifiedSchema?: boolean } = {},
+  ) =>
+    request<SceneAnalysisView>(`/api/projects/${enc(id)}/scenes/${enc(sceneId)}/classify`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  sceneAnalyses: (id: string, sceneId: string) =>
+    request<SceneAnalysisView[]>(`/api/projects/${enc(id)}/scenes/${enc(sceneId)}/analyses`),
+
+  /** Per-date class/water areas from each scene's latest analysis (native grids). */
+  temporalSeries: (id: string) =>
+    request<TemporalSeriesView>(`/api/projects/${enc(id)}/temporal/series`),
+
+  /**
+   * Class transitions between two dates. Throws `ClientError` with the engine's
+   * grid-mismatch message when the grids differ and no reference is given.
+   */
+  compareDates: (
+    id: string,
+    body: { beforeSceneId: string; afterSceneId: string; referenceSceneId?: string | null },
+  ) =>
+    request<TemporalComparisonView>(`/api/projects/${enc(id)}/temporal/compare`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  fusions: (id: string) => request<FusionView[]>(`/api/projects/${enc(id)}/fusion`),
+
+  /** Late fusion of derived per-sensor products on an explicit target grid. */
+  createFusion: (
+    id: string,
+    body: {
+      name?: string;
+      rule: 'weighted_probability' | 'weighted_vote' | 'priority';
+      targetSceneId: string;
+      analysisIds: string[];
+      weights?: Record<string, number>;
+      missingPolicy?: 'require_all' | 'renormalise';
+      priority?: string[];
+    },
+  ) =>
+    request<FusionView>(`/api/projects/${enc(id)}/fusion`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  /** Download URL (not fetched): a scene product the engine verified. */
+  sceneExportUrl: (id: string, analysisId: string, kind: 'hard' | 'probability' | 'uncertainty') =>
+    `/api/projects/${enc(id)}/analyses/${enc(analysisId)}/exports/${enc(kind)}`,
 
   /** Download URL (not fetched): the browser saves the engine's GeoTIFF. */
   exportUrl: (

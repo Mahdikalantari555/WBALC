@@ -1,7 +1,13 @@
 <script lang="ts">
-  import { ChartNoAxesCombined, Download, FileJson, FlaskConical, GitCompare, ShieldCheck, TriangleAlert } from '@lucide/svelte';
+  import { ChartNoAxesCombined, Download, FileJson, FlaskConical, GitCompare, Layers, ShieldCheck, TriangleAlert } from '@lucide/svelte';
   import { api, ClientError } from '../client/api';
-  import type { ComparisonView, ExperimentView, RunLineageView } from '../types';
+  import type {
+    ComparisonView,
+    ExperimentView,
+    FusionView,
+    RunLineageView,
+    TemporalSeriesView,
+  } from '../types';
   import ConfusionMatrix from '../components/ConfusionMatrix.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import MetricBar from '../components/MetricBar.svelte';
@@ -12,7 +18,7 @@
   import { useT } from '../t.svelte';
 
   const workspace = getWorkspace();
-  const { t, date, integer, percent } = useT();
+  const { t, date, integer, percent, number } = useT();
 
   let runId = $state<string | null>(null);
   let focus = $state<'all' | string>('all');
@@ -25,6 +31,10 @@
   let comparisonError = $state<string | null>(null);
   let newExperiment = $state('');
   let busy = $state(false);
+  // ---- scene products & late fusion (Phase 4)
+  let fusions = $state<FusionView[]>([]);
+  let fusionSeries = $state<TemporalSeriesView | null>(null);
+  let fusionError = $state<string | null>(null);
 
   const runs = $derived(workspace.runs);
 
@@ -146,6 +156,36 @@
   $effect(() => {
     if (workspace.project) void loadExperiments();
   });
+
+  /** Per-date single-sensor areas and recorded fused products, for one table. */
+  async function loadFusionComparison() {
+    if (!workspace.project) return;
+    fusionError = null;
+    try {
+      const [recorded, series] = await Promise.all([
+        api.fusions(workspace.project.id),
+        api.temporalSeries(workspace.project.id).catch((error: unknown) => {
+          // 409 = nothing classified yet, which is an empty state, not a fault.
+          if (error instanceof ClientError && error.status === 409) return null;
+          throw error;
+        }),
+      ]);
+      fusions = recorded;
+      fusionSeries = series;
+    } catch (error) {
+      fusions = [];
+      fusionSeries = null;
+      fusionError = error instanceof ClientError ? error.message : String(error);
+    }
+  }
+
+  $effect(() => {
+    if (workspace.project) void loadFusionComparison();
+  });
+
+  function hectares(squareMetres: number): string {
+    return `${number(squareMetres / 10_000, 2)} ha`;
+  }
 
   function downloadCsv() {
     if (!metrics) return;
@@ -292,6 +332,98 @@
       </p>
     {/if}
   </div>
+
+  <section class="surface section-box" aria-labelledby="fusion-heading">
+    <div class="section-heading">
+      <div>
+        <h2 id="fusion-heading"><Layers size={15} /> {t('evaluation.fusion.title')}</h2>
+        <p>{t('evaluation.fusion.description')}</p>
+      </div>
+      <Layers size={16} class="faint" />
+    </div>
+
+    {#if fusionError}
+      <p class="note-block warn">{fusionError}</p>
+    {:else if !fusions.length}
+      <p class="note-block">{t('evaluation.fusion.empty')}</p>
+    {:else}
+      <div class="table-scroll">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>{t('evaluation.fusion.product')}</th>
+              <th>{t('evaluation.fusion.rule')}</th>
+              <th>{t('evaluation.fusion.sources')}</th>
+              <th>{t('temporal.waterArea')}</th>
+              <th>{t('temporal.fusionAgreement')}</th>
+              <th>{t('evaluation.fusion.digest')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each fusions as fusion (fusion.id)}
+              <tr>
+                <td>
+                  {fusion.name || `#${fusion.id}`}
+                  <small class="mono small">
+                    {fusion.aligned ? t('temporal.derivedBadge') : t('temporal.nativeBadge')}
+                  </small>
+                </td>
+                <td>{fusion.rule} · {fusion.missingPolicy}</td>
+                <td class="mono small">
+                  {#each fusion.sources as source (source.analysisId)}
+                    <span class="source-chip" class:aligned={source.gridAligned}>
+                      {source.sensor} · #{source.sceneId} · w {number(source.weight, 2)}
+                    </span>
+                  {/each}
+                </td>
+                <td class="mono ltr-numeric">
+                  {fusion.areas?.water ? hectares(fusion.areas.water.areaM2) : '—'}
+                </td>
+                <td class="mono ltr-numeric">
+                  {fusion.unanimousShare === null ? '—' : percent(fusion.unanimousShare)}
+                </td>
+                <td class="mono small">{fusion.fusionDigest ? fusion.fusionDigest.slice(0, 10) : '—'}…</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      {#if fusionSeries && fusionSeries.dates.length}
+        <span class="section-label">{t('temporal.singleSensorHeading')}</span>
+        <div class="table-scroll">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th>{t('common.date')}</th>
+                <th>{t('common.sensor')}</th>
+                <th>{t('temporal.validArea')}</th>
+                <th>{t('temporal.waterArea')}</th>
+                <th>{t('temporal.coverage')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each fusionSeries.dates as point (point.analysisId)}
+                <tr>
+                  <td class="mono">{date(point.acquisitionDateTime)}</td>
+                  <td>{point.sensor ?? '—'}</td>
+                  <td class="mono ltr-numeric">{hectares(point.validAreaM2)}</td>
+                  <td class="mono ltr-numeric">{point.water ? hectares(point.water.areaM2) : '—'}</td>
+                  <td class="mono ltr-numeric">{percent(point.coverage)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#each fusionSeries.caveats as caveat}
+          <p class="note-block">{caveat}</p>
+        {/each}
+      {:else}
+        <p class="note-block">{t('temporal.fusionNeedTwo')}</p>
+      {/if}
+      <p class="note-block faint">{t('temporal.earlyFusionNote')}</p>
+    {/if}
+  </section>
 
   <section class="surface section-box experiment-panel" aria-labelledby="experiment-heading">
     <div class="section-heading">
@@ -532,6 +664,8 @@
 {/if}
 
 <style>
+  .source-chip { display: inline-block; margin-inline-end: 5px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 4px; font-size: 9.5px; }
+  .source-chip.aligned { color: #e5a25a; border-color: #7a5528; }
   .lineage-status { font-size: 11px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
   .lineage-status.complete { color: #7fd6b4; border-color: #2f6b57; }
   .lineage-status.incomplete { color: #e5a25a; border-color: #7a5528; }

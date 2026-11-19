@@ -328,3 +328,261 @@ describe('training run view model', () => {
     expect(view.metrics.insufficient).toBe(true);
   });
 });
+
+/* ---------------------------------------- scene results & temporal (Phase 4) */
+
+import {
+  toAreaSummary,
+  toFusion,
+  toSceneAnalysis,
+  toTemporalComparison,
+  toTemporalSeries,
+} from './server/adapter';
+import type {
+  RsalDateArea,
+  RsalFusion,
+  RsalSceneAnalysis,
+  RsalTemporalComparison,
+} from './server/rsal';
+
+const analysis = (overrides: Partial<RsalSceneAnalysis> = {}): RsalSceneAnalysis => ({
+  id: 4,
+  project_id: 1,
+  scene_id: 2,
+  training_run_id: 9,
+  resolution: 'patch',
+  method: 'entropy',
+  classes: ['open_water', 'land'],
+  grid: { crs: 'EPSG:32631', transform: [10, 0, 500000, 0, -10, 4649776], width: 64, height: 64, sensor: 'Sentinel-1' },
+  contract: { verified: true, reason: 'ordered band schema matches' },
+  study_area: { applied: false, rule: 'center-in-polygon' },
+  artifacts: { hard: { name: 'hard.tif', sha256: 'a'.repeat(64), size_bytes: 10 } },
+  areas: {
+    available: true,
+    per_class: [
+      { class_index: 0, class_name: 'open_water', valid_pixels: 700, area_m2: 70000, area_ha: 7, share_of_valid: 0.7 },
+      { class_index: 1, class_name: 'land', valid_pixels: 300, area_m2: 30000, area_ha: 3, share_of_valid: 0.3 },
+    ],
+    valid_pixels: 1000,
+    invalid_pixels: 0,
+    total_pixels: 1000,
+    coverage: 1,
+    valid_area_m2: 100000,
+    valid_area_ha: 10,
+    pixel_area_m2_mean: 100,
+    method: { kind: 'projected', supported: true, unit: 'metre', pixel_area_m2: 100 },
+    water: { water_classes: ['open_water'], area_m2: 70000, area_ha: 7, share_of_valid: 0.7, valid_area_m2: 100000 },
+  },
+  lineage: { analysis_digest: 'digest-1', checkpoint_sha256: 'c'.repeat(64) },
+  created_at: '2025-04-14T07:41:00Z',
+  ...overrides,
+});
+
+const dateArea = (overrides: Partial<RsalDateArea> = {}): RsalDateArea => ({
+  scene_id: 2,
+  analysis_id: 4,
+  acquisition_datetime: '2024-01-01T00:00:00Z',
+  sensor: 'Sentinel-1',
+  valid_area_m2: 100000,
+  coverage: 1,
+  per_class: analysis().areas.per_class,
+  water: null,
+  ...overrides,
+});
+
+describe('scene analysis view model', () => {
+  it('keeps the grid, contract and areas without inventing a method', () => {
+    const view = toSceneAnalysis(analysis());
+    expect(view.id).toBe('4');
+    expect(view.sceneId).toBe('2');
+    expect(view.nativeGrid).toBe(true);
+    expect(view.crs).toBe('EPSG:32631');
+    expect(view.bandContractVerified).toBe(true);
+    expect(view.areas.method?.kind).toBe('projected');
+    expect(view.analysisDigest).toBe('digest-1');
+    expect(view.artifacts.hard.sha256).toHaveLength(64);
+  });
+
+  it('reports an unavailable area summary instead of zero-filled confidence', () => {
+    const view = toSceneAnalysis(
+      analysis({
+        areas: {
+          available: false,
+          reason: 'projected CRS linear unit is not convertible',
+          per_class: [],
+          valid_pixels: 0,
+          invalid_pixels: 0,
+          total_pixels: 0,
+          coverage: 0,
+          valid_area_m2: 0,
+          valid_area_ha: 0,
+          pixel_area_m2_mean: 0,
+          method: { kind: 'projected', supported: false, reason: 'unit not convertible' },
+        },
+      }),
+    );
+    expect(view.areas.available).toBe(false);
+    expect(view.areas.reason).toContain('not convertible');
+    expect(view.areas.perClass).toHaveLength(0);
+  });
+
+  it('marks an unverified band contract as such', () => {
+    const view = toSceneAnalysis(
+      analysis({ contract: { verified: false, reason: 'bands unnamed', override: true } }),
+    );
+    expect(view.bandContractVerified).toBe(false);
+    expect(view.bandContractReason).toBe('bands unnamed');
+  });
+
+  it('treats a missing area summary as unavailable, never as zeros with a method', () => {
+    const summary = toAreaSummary(null);
+    expect(summary.available).toBe(false);
+    expect(summary.method).toBeNull();
+    expect(summary.reason).toContain('no area summary');
+  });
+});
+
+describe('temporal series view model', () => {
+  it('labels the series native and forwards grid caveats', () => {
+    const view = toTemporalSeries({
+      project_id: 1,
+      classes: ['open_water', 'land'],
+      dates: [dateArea(), dateArea({ scene_id: 3, analysis_id: 5, valid_area_m2: 50000 })],
+      alignment: { mode: 'native', resampling: 'none', grids_identical: false },
+      caveats: ['Scenes 3 are on a different grid from scene 2'],
+    });
+    expect(view.mode).toBe('native');
+    expect(view.gridsIdentical).toBe(false);
+    expect(view.caveats).toHaveLength(1);
+    expect(view.dates.map((entry) => entry.sceneId)).toEqual(['2', '3']);
+  });
+});
+
+describe('temporal comparison view model', () => {
+  it('reports explicit alignment and the jointly valid denominator', () => {
+    const comparison: RsalTemporalComparison = {
+      before_scene_id: 2,
+      after_scene_id: 3,
+      classes: ['open_water', 'land'],
+      alignment: { aligned: true, method: 'nearest', reference_scene_id: 2 },
+      transitions: {
+        classes: ['open_water', 'land'],
+        matrix: [
+          [10, 5],
+          [2, 20],
+        ],
+        matrix_area_m2: [
+          [100, 50],
+          [20, 200],
+        ],
+        joint_valid_pixels: 37,
+        joint_valid_area_m2: 370,
+        joint_valid_area_ha: 0.037,
+        changed_pixels: 7,
+        changed_area_m2: 70,
+        changed_area_ha: 0.007,
+        unchanged_pixels: 30,
+        changes: [
+          { from: 'open_water', to: 'land', pixels: 5, area_m2: 50, area_ha: 0.005 },
+          { from: 'land', to: 'open_water', pixels: 2, area_m2: 20, area_ha: 0.002 },
+        ],
+        denominator: 'pixels valid in both dates',
+      },
+      before: dateArea(),
+      after: dateArea({ scene_id: 3, analysis_id: 5 }),
+      lineage: { comparison_digest: 'd1' },
+      caveats: ['Changes are measured after nearest-neighbour alignment'],
+    };
+    const view = toTemporalComparison(comparison);
+    expect(view.aligned).toBe(true);
+    expect(view.alignmentMethod).toBe('nearest');
+    expect(view.referenceSceneId).toBe('2');
+    expect(view.denominator).toBe('pixels valid in both dates');
+    expect(view.matrix).toHaveLength(4);
+    expect(view.matrix[0]).toEqual({ from: 'open_water', to: 'open_water', pixels: 10, areaM2: 100 });
+    expect(view.changedAreaM2).toBe(70);
+    expect(view.caveats[0]).toContain('nearest-neighbour');
+  });
+
+  it('says no resampling happened when the grids matched', () => {
+    const view = toTemporalComparison({
+      before_scene_id: 2,
+      after_scene_id: 3,
+      classes: ['open_water'],
+      alignment: { aligned: false, method: 'none', reference_scene_id: 2 },
+      transitions: {
+        classes: ['open_water'],
+        matrix: [[4]],
+        matrix_area_m2: [[40]],
+        joint_valid_pixels: 4,
+        joint_valid_area_m2: 40,
+        joint_valid_area_ha: 0.004,
+        changed_pixels: 0,
+        changed_area_m2: 0,
+        changed_area_ha: 0,
+        unchanged_pixels: 4,
+        changes: [],
+        denominator: 'pixels valid in both dates',
+      },
+      before: dateArea(),
+      after: dateArea({ scene_id: 3 }),
+      lineage: {},
+      caveats: [],
+    });
+    expect(view.aligned).toBe(false);
+    expect(view.transitions).toHaveLength(0);
+  });
+});
+
+describe('fusion view model', () => {
+  const fusion = (overrides: Partial<RsalFusion> = {}): RsalFusion => ({
+    id: 7,
+    project_id: 1,
+    name: 'fusion 2 sources',
+    rule: 'weighted_probability',
+    weights: { 'Sentinel-1': 0.6, 'Sentinel-2': 0.4 },
+    target_grid: { crs: 'EPSG:32631' },
+    alignment: { resampling: 'nearest', aligned_sources: [5] },
+    missing_policy: 'require_all',
+    sources: [
+      { analysis_id: 4, scene_id: 2, sensor: 'Sentinel-1', weight: 0.6, grid_aligned: false, analysis_digest: 'd4' },
+      { analysis_id: 5, scene_id: 3, sensor: 'Sentinel-2', weight: 0.4, grid_aligned: true, analysis_digest: 'd5' },
+    ],
+    classes: ['open_water', 'land'],
+    areas: analysis().areas,
+    agreement: { sources: 2, unanimous_share: 0.75, fused_valid_pixels: 800 },
+    artifacts: { hard: { sha256: 'f'.repeat(64) } },
+    lineage: { fusion_digest: 'fdigest', fusion_kind: 'late' },
+    created_at: '2025-04-14T07:41:00Z',
+    ...overrides,
+  });
+
+  it('keeps per-source records and flags which one was aligned', () => {
+    const view = toFusion(fusion());
+    expect(view.aligned).toBe(true);
+    expect(view.alignedSources).toEqual(['5']);
+    expect(view.sources.map((source) => source.analysisId)).toEqual(['4', '5']);
+    expect(view.sources[1].gridAligned).toBe(true);
+    expect(view.unanimousShare).toBe(0.75);
+  });
+
+  it('reports no alignment when every source shares the target grid', () => {
+    const view = toFusion(
+      fusion({
+        alignment: { resampling: 'none', aligned_sources: [] },
+        sources: [
+          { analysis_id: 4, scene_id: 2, sensor: 'Sentinel-1', weight: 0.5, grid_aligned: false },
+          { analysis_id: 5, scene_id: 3, sensor: 'Sentinel-2', weight: 0.5, grid_aligned: false },
+        ],
+      }),
+    );
+    expect(view.aligned).toBe(false);
+    expect(view.alignedSources).toEqual([]);
+  });
+
+  it('does not invent agreement numbers the engine did not report', () => {
+    const view = toFusion(fusion({ agreement: {} }));
+    expect(view.unanimousShare).toBeNull();
+    expect(view.fusedValidPixels).toBeNull();
+  });
+});

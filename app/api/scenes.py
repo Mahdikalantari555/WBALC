@@ -96,6 +96,7 @@ async def register_scene(
     platform: str | None = Form(default=None, max_length=100),
     product_type: str | None = Form(default=None, max_length=100),
     product_level: str | None = Form(default=None, max_length=50),
+    band_names: str | None = Form(default=None),
     polarization: str | None = Form(default=None),
     acquisition_mode: str | None = Form(default=None, max_length=30),
     orbit_direction: Literal["ascending", "descending"] | None = Form(default=None),
@@ -122,6 +123,13 @@ async def register_scene(
         if any(value <= 0 for value in native_resolution.values()):
             raise HTTPException(status_code=422, detail="native band resolutions must be positive")
 
+    # Optional explicit band names: a product whose bands are undescribed cannot
+    # otherwise prove its band identity, and a band-count match is not identity.
+    named_bands = None
+    if band_names:
+        named_bands = [token.strip() for token in band_names.split(",")]
+        if not all(named_bands):
+            raise HTTPException(status_code=422, detail="band_names must not contain empty entries")
     polarizations = None
     if polarization:
         polarizations = sorted({token.strip().upper() for token in polarization.split(",") if token.strip()})
@@ -162,6 +170,18 @@ async def register_scene(
     except RasterError as exc:
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if named_bands is not None:
+        if len(named_bands) != raster_metadata["band_count"]:
+            destination.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"band_names lists {len(named_bands)} names but the raster has "
+                    f"{raster_metadata['band_count']} bands"
+                ),
+            )
+        raster_metadata["band_names"] = named_bands
 
     scene = Scene(
         project_id=project_id,

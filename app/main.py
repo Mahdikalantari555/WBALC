@@ -8,7 +8,18 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .api import datasets, inference, labels, lineage, projects, query, scenes, som, training
+from .api import (
+    datasets,
+    inference,
+    labels,
+    lineage,
+    projects,
+    query,
+    scenes,
+    som,
+    temporal,
+    training,
+)
 from .config import Settings, settings as default_settings
 from .db import Database
 from .storage import ensure_dirs
@@ -56,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(training.router)
     app.include_router(inference.router)
     app.include_router(lineage.router)
+    app.include_router(temporal.router)
 
     @app.get("/health", tags=["health"])
     async def health():

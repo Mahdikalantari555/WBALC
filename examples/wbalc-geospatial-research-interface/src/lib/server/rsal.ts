@@ -436,6 +436,162 @@ export interface RsalExperiment {
   run_ids: number[];
 }
 
+export interface RsalPixelAreaMethod {
+  kind: 'projected' | 'geographic' | 'unknown' | 'other';
+  supported: boolean;
+  unit?: string | null;
+  metres_per_unit?: number | null;
+  ellipsoid?: string | null;
+  pixel_area_m2?: number | null;
+  varies_by_row?: boolean | null;
+  row_area_min_m2?: number | null;
+  row_area_max_m2?: number | null;
+  reason?: string | null;
+  note?: string | null;
+}
+
+export interface RsalClassArea {
+  class_index: number;
+  class_name: string;
+  valid_pixels: number;
+  area_m2: number;
+  area_ha: number;
+  share_of_valid: number;
+}
+
+export interface RsalWaterArea {
+  water_classes: string[];
+  area_m2: number;
+  area_ha: number;
+  valid_area_m2: number;
+  share_of_valid: number;
+}
+
+export interface RsalAreaSummary {
+  available: boolean;
+  reason?: string | null;
+  per_class: RsalClassArea[];
+  valid_pixels: number;
+  invalid_pixels: number;
+  total_pixels: number;
+  coverage: number;
+  valid_area_m2: number;
+  valid_area_ha: number;
+  pixel_area_m2_mean: number;
+  method?: RsalPixelAreaMethod | null;
+  water?: RsalWaterArea | null;
+}
+
+export interface RsalSceneAnalysis {
+  id: number;
+  project_id: number;
+  scene_id: number;
+  training_run_id: number;
+  resolution: string;
+  method: string;
+  classes: string[];
+  grid: {
+    scene_id?: number;
+    crs?: string | null;
+    transform?: number[] | null;
+    width?: number;
+    height?: number;
+    sensor?: string;
+    band_count?: number;
+    has_validity_mask?: boolean;
+  };
+  contract: Record<string, unknown>;
+  study_area: Record<string, unknown>;
+  artifacts: Record<string, { path?: string; name?: string; sha256?: string | null; size_bytes?: number | null }>;
+  areas: RsalAreaSummary;
+  lineage: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface RsalSceneClassification {
+  analysis: RsalSceneAnalysis;
+  scene_id: number;
+  acquisition_datetime: string | null;
+  sensor: string;
+}
+
+export interface RsalDateArea {
+  scene_id: number;
+  analysis_id: number;
+  acquisition_datetime: string | null;
+  sensor: string | null;
+  valid_area_m2: number;
+  coverage: number;
+  per_class: RsalClassArea[];
+  water: RsalWaterArea | null;
+}
+
+export interface RsalTemporalSeries {
+  project_id: number;
+  dates: RsalDateArea[];
+  classes: string[];
+  alignment: Record<string, unknown>;
+  caveats: string[];
+}
+
+export interface RsalTransitions {
+  classes: string[];
+  matrix: number[][];
+  matrix_area_m2: number[][];
+  joint_valid_pixels: number;
+  joint_valid_area_m2: number;
+  joint_valid_area_ha: number;
+  changed_pixels: number;
+  changed_area_m2: number;
+  changed_area_ha: number;
+  unchanged_pixels: number;
+  changes: {
+    from?: string;
+    to?: string;
+    pixels: number;
+    area_m2: number;
+    area_ha: number;
+  }[];
+  denominator: string;
+}
+
+export interface RsalTemporalComparison {
+  before_scene_id: number;
+  after_scene_id: number;
+  classes: string[];
+  alignment: Record<string, unknown>;
+  transitions: RsalTransitions;
+  before: RsalDateArea;
+  after: RsalDateArea;
+  lineage: Record<string, unknown>;
+  caveats: string[];
+}
+
+export interface RsalFusion {
+  id: number;
+  project_id: number;
+  name: string;
+  rule: string;
+  weights: Record<string, number>;
+  target_grid: Record<string, unknown>;
+  alignment: Record<string, unknown>;
+  missing_policy: string;
+  sources: {
+    analysis_id: number;
+    scene_id: number;
+    sensor: string;
+    weight: number;
+    grid_aligned: boolean;
+    analysis_digest?: string | null;
+  }[];
+  classes: string[];
+  areas: RsalAreaSummary | null;
+  agreement: Record<string, unknown>;
+  artifacts: Record<string, { path?: string; sha256?: string | null }>;
+  lineage: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface RsalTrainResponse {
   id: number;
   project_id: number;

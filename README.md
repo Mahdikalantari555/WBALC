@@ -119,10 +119,11 @@ The database migration runner applies versioned additive migrations at startup.
 Migration 1 adds project study-area/classification fields and creates the scenes
 table; 2 adds `datasets.band_schema`, 3 adds `projects.taxonomy`, 4 adds
 `labels.submitted_class_name`, 5 adds `training_runs.trained_classes`, 6 adds
-`query_batches`/`query_items` plus the label → query-item link, and 7 adds the
+`query_batches`/`query_items` plus the label → query-item link, 7 adds the
 lineage columns (`content_sha256`, `size_bytes`, `sha256`, `manifest`,
-`checkpoint_sha256`, `experiment_id`) plus the `experiments` table. All are
-additive, idempotent and preserve existing RSAL rows. A `NULL` band schema
+`checkpoint_sha256`, `experiment_id`) plus the `experiments` table, and 8 adds
+`scene_analyses` and `fusion_runs`. All are additive, idempotent and preserve
+existing RSAL rows. A `NULL` band schema
 means "undeclared": band identity is never backfilled from filenames or a sensor
 default, so legacy datasets keep requiring an explicit override to be used.
 
@@ -320,6 +321,110 @@ A score is only meaningful next to the data that produced it.
   identical results across different library or hardware versions are not
   promised.
 
+## Temporal water mapping: native grids, areas, change and late fusion
+
+Scenes registered under a project can now be classified and compared. The
+governing rule is that **nothing is resampled unless someone explicitly says so,
+and every number states the grid and the method behind it**.
+
+### Classify one scene on its own grid
+
+```bash
+curl -X POST localhost:8000/projects/1/scenes/3/classify \
+  -H 'content-type: application/json' \
+  -d '{"method": "entropy"}'
+```
+
+- The scene is read on its **native affine**; hard, probability and uncertainty
+  GeoTIFFs are written there, each with a recorded SHA-256, and the whole run is
+  stored as an immutable `scene_analyses` row (grid, classes, band contract,
+  study-area rule, artifacts, area summary, lineage digest).
+- **Band identity must be provable.** The model's declared band schema is compared
+  with the *scene's own* declared band names (band descriptions, or polarization
+  when the count matches). A matching band count is never enough — a Sentinel-1
+  GRD and a Sentinel-2 stack can both have four bands and mean different things.
+  Unprovable identity is a `422` unless the caller records an explicit
+  `accept_unverified_schema: true` override.
+- The project study area is applied with the pixel-centre rule the dataset path
+  uses, and the rule is stored with the record.
+- `GET /projects/1/scenes/3/analyses` lists every classification (oldest first);
+  a re-classification is a *new* record, never a rewrite.
+- `GET /projects/1/analyses/4/exports/hard|probability|uncertainty` re-verifies
+  the checksum, reopens the file to prove it is still on the recorded grid, and
+  checks the source scene bytes still match their recorded hash. Tampering is a
+  `409`; the record stays as written.
+
+### Areas that state their method
+
+`app/services/area_service.py` has exactly two honest answers:
+
+| CRS | Method | Recorded as |
+| --- | --- | --- |
+| Projected, known linear unit | `\|det(affine)\| × (metres per unit)²` | `kind: "projected"`, `unit`, `pixel_area_m2` |
+| Geographic | Exact WGS84 ellipsoid integration per pixel row | `kind: "geographic"`, `ellipsoid: "WGS84 (assumed)"`, `varies_by_row`, row min/max |
+| Projected with an unconvertible unit, or no CRS | none | areas reported `available: false` with the reason |
+
+Every area table carries its **valid denominator**: invalid/no-data pixels are
+excluded from both the numerator and the total, `coverage` is reported, and a
+binary water total is only produced when the run's taxonomy snapshot names the
+water classes.
+
+### Per-date series and change
+
+```bash
+curl localhost:8000/projects/1/temporal/series
+
+curl -X POST localhost:8000/projects/1/temporal/compare \
+  -H 'content-type: application/json' \
+  -d '{"before_scene_id": 3, "after_scene_id": 4}'
+```
+
+- The series reports per-date class/water areas computed **natively per scene**,
+  and lists differing grids or taxonomies as caveats instead of quietly
+  reconciling them.
+- The comparison returns a transition matrix, changed/unchanged areas and the
+  denominator `"pixels valid in both dates"` — a change in cloud cover cannot
+  masquerade as a change in water.
+- **Mismatched grids fail closed.** The response is
+  `409 {"error": "grid_mismatch", "differences": [...], "resampling_options": ["nearest"], "hint": ...}`
+  naming every differing field.
+- Alignment happens only on request: pass `"reference_scene_id"` (one of the two
+  scenes). It is nearest-neighbour, recorded in `alignment` and in
+  `lineage.comparison_digest`, and the native products are untouched.
+
+### Late fusion only
+
+```bash
+curl -X POST localhost:8000/projects/1/fusion \
+  -H 'content-type: application/json' \
+  -d '{"rule": "weighted_probability", "target_scene_id": 3,
+       "analysis_ids": [1, 2], "weights": {"Sentinel-1": 0.6, "Sentinel-2": 0.4},
+       "missing_policy": "require_all"}'
+```
+
+- The **target grid is a real scene's grid**, declared in the request and stored
+  with the result.
+- Rules: `weighted_probability`, `weighted_vote`, `priority`. Missing-data
+  semantics are explicit: `require_all` (a pixel is fused only where every source
+  is valid) or `renormalise` (weights are renormalised over the sources available
+  at each pixel). The chosen semantics are stored verbatim in the record.
+- Per-sensor results are **preserved**, not replaced: each source analysis id,
+  sensor, weight, alignment flag and analysis digest is part of the fusion record,
+  alongside agreement statistics (unanimous share, per-source agreement).
+- `early_fusion` / `raw_band_fusion` are refused with a structured `422`
+  (`early_fusion_rejected`): combining raw bands across sensors would need a
+  harmonisation step this engine does not implement, and the result could not be
+  decomposed back into per-sensor evidence.
+
+### In the research workspace
+
+The **Temporal Analysis** page now shows per-date result cards (native-grid badge,
+area method, class and water areas, verified downloads), a per-date series table
+with its caveats, a change panel that offers explicit alignment only after the
+engine reports a grid mismatch, and a fusion panel listing per-source weights,
+alignment and agreement. **Results & Evaluation** gained a "Single-sensor vs fused
+products" panel so a fused number is always read next to the per-sensor evidence.
+
 ## Sampling history and annotation provenance
 
 Active-learning selections are no longer a browser artefact. Every successful
@@ -455,6 +560,12 @@ the requested window is materialised, so the limit scales with classes.
   Pending suggestions survive a refresh on that browser/profile, but they are not
   shared between browsers and are lost if site data is cleared; labels are only
   durable once submitted to `/labels`.
+- **Geographic-CRS areas assume WGS84.** A geographic grid's pixel areas are
+  integrated on the WGS84 ellipsoid; the response records that assumption, and a
+  geographic CRS on another ellipsoid would bias the numbers.
+- **Temporal change needs one class order.** Two dates classified by runs with
+  different class lists are refused (409) rather than remapped; alignment is
+  nearest-neighbour only, and there is no "classify all scenes" batch job.
 - **Pixel-mode training is API-only.** The workspace trains patch models; its
   adapter forwards `resolution`/`evaluation_strategy` when a caller supplies them.
 - **Unsupervised SOM** still loads the full raster and uses at most

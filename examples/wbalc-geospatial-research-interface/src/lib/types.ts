@@ -367,3 +367,149 @@ export interface AdapterErrorShape {
   message: string;
   status: number;
 }
+
+/* ---------------------------------------------- scene results & temporal (Phase 4) */
+
+/** How a pixel area was derived. `kind` is never guessed by the UI. */
+export interface PixelAreaMethodView {
+  kind: 'projected' | 'geographic' | 'unknown' | 'other';
+  supported: boolean;
+  unit: string | null;
+  metresPerUnit: number | null;
+  ellipsoid: string | null;
+  pixelAreaM2: number | null;
+  variesByRow: boolean | null;
+  rowAreaMinM2: number | null;
+  rowAreaMaxM2: number | null;
+  reason: string | null;
+  note: string | null;
+}
+
+export interface ClassAreaView {
+  className: string;
+  classIndex: number;
+  validPixels: number;
+  areaM2: number;
+  areaHa: number;
+  shareOfValid: number;
+}
+
+export interface WaterAreaView {
+  waterClasses: string[];
+  areaM2: number;
+  areaHa: number;
+  shareOfValid: number;
+  validAreaM2: number;
+}
+
+export interface AreaSummaryView {
+  available: boolean;
+  reason: string | null;
+  perClass: ClassAreaView[];
+  validPixels: number;
+  totalPixels: number;
+  coverage: number;
+  validAreaM2: number;
+  validAreaHa: number;
+  pixelAreaM2Mean: number;
+  method: PixelAreaMethodView | null;
+  water: WaterAreaView | null;
+}
+
+export interface SceneAnalysisView {
+  id: string;
+  sceneId: string;
+  runId: string;
+  resolution: string;
+  method: string;
+  classes: string[];
+  crs: string | null;
+  width: number | null;
+  height: number | null;
+  sensor: string | null;
+  /** True when the analysis ran on the scene's own grid (always, in this engine). */
+  nativeGrid: true;
+  bandContractVerified: boolean;
+  bandContractReason: string | null;
+  studyAreaApplied: boolean;
+  studyAreaRule: string | null;
+  artifacts: Record<string, { name: string | null; sha256: string | null; sizeBytes: number | null }>;
+  areas: AreaSummaryView;
+  analysisDigest: string | null;
+  createdAt: string;
+}
+
+export interface TemporalDateView {
+  sceneId: string;
+  analysisId: string;
+  acquisitionDateTime: string | null;
+  sensor: string | null;
+  validAreaM2: number;
+  coverage: number;
+  perClass: ClassAreaView[];
+  water: WaterAreaView | null;
+}
+
+export interface TemporalSeriesView {
+  classes: string[];
+  dates: TemporalDateView[];
+  /** Always 'native': this engine reports per-date areas without resampling. */
+  mode: 'native';
+  gridsIdentical: boolean;
+  caveats: string[];
+}
+
+export interface TransitionView {
+  from: string;
+  to: string;
+  pixels: number;
+  areaM2: number;
+  areaHa: number;
+}
+
+export interface TemporalComparisonView {
+  beforeSceneId: string;
+  afterSceneId: string;
+  classes: string[];
+  /** False when no resampling was performed (identical grids). */
+  aligned: boolean;
+  alignmentMethod: string | null;
+  referenceSceneId: string | null;
+  jointValidPixels: number;
+  jointValidAreaM2: number;
+  changedPixels: number;
+  changedAreaM2: number;
+  changedAreaHa: number;
+  transitions: { from: string; to: string; pixels: number; areaM2: number; areaHa: number }[];
+  matrix: { from: string; to: string; pixels: number; areaM2: number }[];
+  denominator: string;
+  before: TemporalDateView | null;
+  after: TemporalDateView | null;
+  caveats: string[];
+}
+
+export interface FusionSourceView {
+  analysisId: string;
+  sceneId: string;
+  sensor: string;
+  weight: number;
+  gridAligned: boolean;
+  analysisDigest: string | null;
+}
+
+export interface FusionView {
+  id: string;
+  name: string;
+  rule: string;
+  weights: Record<string, number>;
+  missingPolicy: string;
+  aligned: boolean;
+  alignedSources: string[];
+  sources: FusionSourceView[];
+  classes: string[];
+  areas: AreaSummaryView | null;
+  unanimousShare: number | null;
+  fusedValidPixels: number | null;
+  fusionDigest: string | null;
+  createdAt: string;
+}

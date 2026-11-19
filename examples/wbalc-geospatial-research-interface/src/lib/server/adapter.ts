@@ -7,6 +7,7 @@
  */
 import { assessGeoreferencing, datasetBounds, normalizeCrs, toWgs84 } from '$lib/geo';
 import type {
+  AreaSummaryView,
   BinaryView,
   ClassMetric,
   DatasetView,
@@ -23,7 +24,12 @@ import type {
   QuerySampleView,
   RunLineageView,
   RunView,
+  SceneAnalysisView,
   SceneView,
+  TemporalComparisonView,
+  TemporalDateView,
+  TemporalSeriesView,
+  FusionView,
 } from '$lib/types';
 import type {
   RsalBinarySummary,
@@ -39,7 +45,13 @@ import type {
   RsalQueryResponse,
   RsalRunLineage,
   RsalRunSummary,
+  RsalAreaSummary,
+  RsalDateArea,
+  RsalFusion,
   RsalScene,
+  RsalSceneAnalysis,
+  RsalTemporalComparison,
+  RsalTemporalSeries,
   RsalTrainResponse,
 } from './rsal';
 
@@ -504,5 +516,222 @@ export function toMapField(field: RsalMapField): MapFieldView {
     bandSchemaReason: field.band_schema_reason ?? null,
     studyAreaApplied: Boolean(field.study_area_applied),
     studyAreaNote: field.study_area_note ?? null,
+  };
+}
+
+/* ------------------------------------------- scene results & temporal (Phase 4) */
+
+export function toPixelAreaMethod(
+  method: RsalSceneAnalysis['areas']['method'],
+): import('$lib/types').PixelAreaMethodView | null {
+  if (!method) return null;
+  return {
+    kind: method.kind,
+    supported: method.supported,
+    unit: method.unit ?? null,
+    metresPerUnit: method.metres_per_unit ?? null,
+    ellipsoid: method.ellipsoid ?? null,
+    pixelAreaM2: method.pixel_area_m2 ?? null,
+    variesByRow: method.varies_by_row ?? null,
+    rowAreaMinM2: method.row_area_min_m2 ?? null,
+    rowAreaMaxM2: method.row_area_max_m2 ?? null,
+    reason: method.reason ?? null,
+    note: method.note ?? null,
+  };
+}
+
+export function toAreaSummary(areas: RsalAreaSummary | null | undefined): AreaSummaryView {
+  if (!areas) {
+    return {
+      available: false,
+      reason: 'no area summary recorded for this product',
+      perClass: [],
+      validPixels: 0,
+      totalPixels: 0,
+      coverage: 0,
+      validAreaM2: 0,
+      validAreaHa: 0,
+      pixelAreaM2Mean: 0,
+      method: null,
+      water: null,
+    };
+  }
+  return {
+    available: areas.available,
+    reason: areas.reason ?? null,
+    perClass: (areas.per_class ?? []).map((entry) => ({
+      className: entry.class_name,
+      classIndex: entry.class_index,
+      validPixels: entry.valid_pixels,
+      areaM2: entry.area_m2,
+      areaHa: entry.area_ha,
+      shareOfValid: entry.share_of_valid,
+    })),
+    validPixels: areas.valid_pixels,
+    totalPixels: areas.total_pixels,
+    coverage: areas.coverage,
+    validAreaM2: areas.valid_area_m2,
+    validAreaHa: areas.valid_area_ha,
+    pixelAreaM2Mean: areas.pixel_area_m2_mean,
+    method: toPixelAreaMethod(areas.method ?? null),
+    water: areas.water
+      ? {
+          waterClasses: areas.water.water_classes,
+          areaM2: areas.water.area_m2,
+          areaHa: areas.water.area_ha,
+          shareOfValid: areas.water.share_of_valid,
+          validAreaM2: areas.water.valid_area_m2,
+        }
+      : null,
+  };
+}
+
+export function toSceneAnalysis(analysis: RsalSceneAnalysis): SceneAnalysisView {
+  return {
+    id: String(analysis.id),
+    sceneId: String(analysis.scene_id),
+    runId: String(analysis.training_run_id),
+    resolution: analysis.resolution,
+    method: analysis.method,
+    classes: analysis.classes ?? [],
+    crs: normalizeCrs(analysis.grid?.crs ?? null),
+    width: analysis.grid?.width ?? null,
+    height: analysis.grid?.height ?? null,
+    sensor: analysis.grid?.sensor ?? null,
+    nativeGrid: true,
+    bandContractVerified: Boolean(analysis.contract?.verified),
+    bandContractReason: (analysis.contract?.reason as string | undefined) ?? null,
+    studyAreaApplied: Boolean(analysis.study_area?.applied),
+    studyAreaRule: (analysis.study_area?.rule as string | undefined) ?? null,
+    artifacts: Object.fromEntries(
+      Object.entries(analysis.artifacts ?? {}).map(([kind, entry]) => [
+        kind,
+        {
+          name: entry.name ?? null,
+          sha256: entry.sha256 ?? null,
+          sizeBytes: entry.size_bytes ?? null,
+        },
+      ]),
+    ),
+    areas: toAreaSummary(analysis.areas),
+    analysisDigest: (analysis.lineage?.analysis_digest as string | undefined) ?? null,
+    createdAt: analysis.created_at,
+  };
+}
+
+export function toTemporalDate(date: RsalDateArea): TemporalDateView {
+  return {
+    sceneId: String(date.scene_id),
+    analysisId: String(date.analysis_id),
+    acquisitionDateTime: date.acquisition_datetime,
+    sensor: date.sensor ?? null,
+    validAreaM2: date.valid_area_m2,
+    coverage: date.coverage,
+    perClass: (date.per_class ?? []).map((entry) => ({
+      className: entry.class_name,
+      classIndex: entry.class_index,
+      validPixels: entry.valid_pixels,
+      areaM2: entry.area_m2,
+      areaHa: entry.area_ha,
+      shareOfValid: entry.share_of_valid,
+    })),
+    water: date.water
+      ? {
+          waterClasses: date.water.water_classes,
+          areaM2: date.water.area_m2,
+          areaHa: date.water.area_ha,
+          shareOfValid: date.water.share_of_valid,
+          validAreaM2: date.water.valid_area_m2,
+        }
+      : null,
+  };
+}
+
+export function toTemporalSeries(series: RsalTemporalSeries): TemporalSeriesView {
+  return {
+    classes: series.classes ?? [],
+    dates: (series.dates ?? []).map(toTemporalDate),
+    mode: 'native',
+    gridsIdentical: Boolean(series.alignment?.grids_identical),
+    caveats: series.caveats ?? [],
+  };
+}
+
+export function toTemporalComparison(comparison: RsalTemporalComparison): TemporalComparisonView {
+  const transitions = comparison.transitions;
+  const classes = transitions.classes ?? comparison.classes ?? [];
+  const matrix: { from: string; to: string; pixels: number; areaM2: number }[] = [];
+  (transitions.matrix ?? []).forEach((row, rowIndex) => {
+    row.forEach((pixels, colIndex) => {
+      matrix.push({
+        from: classes[rowIndex] ?? `#${rowIndex}`,
+        to: classes[colIndex] ?? `#${colIndex}`,
+        pixels,
+        areaM2: transitions.matrix_area_m2?.[rowIndex]?.[colIndex] ?? 0,
+      });
+    });
+  });
+  return {
+    beforeSceneId: String(comparison.before_scene_id),
+    afterSceneId: String(comparison.after_scene_id),
+    classes,
+    aligned: Boolean(comparison.alignment?.aligned),
+    alignmentMethod: (comparison.alignment?.method as string | undefined) ?? null,
+    referenceSceneId:
+      comparison.alignment?.reference_scene_id != null
+        ? String(comparison.alignment.reference_scene_id)
+        : null,
+    jointValidPixels: transitions.joint_valid_pixels,
+    jointValidAreaM2: transitions.joint_valid_area_m2,
+    changedPixels: transitions.changed_pixels,
+    changedAreaM2: transitions.changed_area_m2,
+    changedAreaHa: transitions.changed_area_ha,
+    transitions: (transitions.changes ?? []).map((entry) => ({
+      from: entry.from ?? '',
+      to: entry.to ?? '',
+      pixels: entry.pixels,
+      areaM2: entry.area_m2,
+      areaHa: entry.area_ha,
+    })),
+    matrix,
+    denominator: transitions.denominator,
+    before: comparison.before ? toTemporalDate(comparison.before) : null,
+    after: comparison.after ? toTemporalDate(comparison.after) : null,
+    caveats: comparison.caveats ?? [],
+  };
+}
+
+export function toFusion(fusion: RsalFusion): FusionView {
+  const alignedSources = (fusion.sources ?? [])
+    .filter((source) => source.grid_aligned)
+    .map((source) => String(source.analysis_id));
+  return {
+    id: String(fusion.id),
+    name: fusion.name,
+    rule: fusion.rule,
+    weights: fusion.weights ?? {},
+    missingPolicy: fusion.missing_policy,
+    aligned: alignedSources.length > 0,
+    alignedSources,
+    sources: (fusion.sources ?? []).map((source) => ({
+      analysisId: String(source.analysis_id),
+      sceneId: String(source.scene_id),
+      sensor: source.sensor,
+      weight: source.weight,
+      gridAligned: source.grid_aligned,
+      analysisDigest: source.analysis_digest ?? null,
+    })),
+    classes: fusion.classes ?? [],
+    areas: fusion.areas ? toAreaSummary(fusion.areas) : null,
+    unanimousShare:
+      typeof fusion.agreement?.unanimous_share === 'number'
+        ? (fusion.agreement.unanimous_share as number)
+        : null,
+    fusedValidPixels:
+      typeof fusion.agreement?.fused_valid_pixels === 'number'
+        ? (fusion.agreement.fused_valid_pixels as number)
+        : null,
+    fusionDigest: (fusion.lineage?.fusion_digest as string | undefined) ?? null,
+    createdAt: fusion.created_at,
   };
 }

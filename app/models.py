@@ -275,6 +275,67 @@ class QueryItem(Base):
     batch: Mapped[QueryBatch] = relationship(back_populates="items")
 
 
+class SceneAnalysis(Base):
+    """One classification of one Scene on that Scene's native grid.
+
+    Immutable record: it stores the grid it was computed on, the model and the
+    schema contract that allowed the inference, the exports it wrote (with their
+    checksums) and the area summary derived from them.
+    """
+
+    __tablename__ = "scene_analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    scene_id: Mapped[int] = mapped_column(
+        ForeignKey("scenes.id", ondelete="CASCADE"), index=True
+    )
+    training_run_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    resolution: Mapped[str] = mapped_column(String(20), nullable=False)
+    method: Mapped[str] = mapped_column(String(40), default="entropy", nullable=False)
+    # The grid actually written: crs/transform/width/height, so a reader can prove
+    # compatibility instead of assuming it.
+    grid: Mapped[dict] = mapped_column(JSON, default=dict)
+    classes: Mapped[list] = mapped_column(JSON, default=list)
+    taxonomy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    contract: Mapped[dict] = mapped_column(JSON, default=dict)
+    study_area: Mapped[dict] = mapped_column(JSON, default=dict)
+    artifacts: Mapped[dict] = mapped_column(JSON, default=dict)
+    areas: Mapped[dict] = mapped_column(JSON, default=dict)
+    lineage: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FusionRun(Base):
+    """A declared late fusion of per-sensor derived products.
+
+    Records the rule, the weights, the target grid and every source analysis, so
+    the combined map can always be decomposed back into its per-sensor inputs.
+    """
+
+    __tablename__ = "fusion_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), default="")
+    rule: Mapped[str] = mapped_column(String(40), nullable=False)
+    weights: Mapped[dict] = mapped_column(JSON, default=dict)
+    target_grid: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_analysis_ids: Mapped[list] = mapped_column(JSON, default=list)
+    missing_policy: Mapped[str] = mapped_column(String(40), default="require_all")
+    alignment: Mapped[dict] = mapped_column(JSON, default=dict)
+    classes: Mapped[list] = mapped_column(JSON, default=list)
+    hard: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    areas: Mapped[dict] = mapped_column(JSON, default=dict)
+    agreement: Mapped[dict] = mapped_column(JSON, default=dict)
+    lineage: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Export(Base):
     __tablename__ = "exports"
 

@@ -252,7 +252,7 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
     with TestClient(app) as client:
         assert client.get("/projects/1").json()["classes"] == ["water", "land"]
     connection = sqlite3.connect(db_path)
-    # Both additive migrations must have run exactly once, and running the app a
+    # Every additive migration must have run exactly once, and running the app a
     # second time must not add duplicates.
     assert connection.execute("SELECT version FROM schema_migrations").fetchall() == [
         (1,),
@@ -262,6 +262,7 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
         (5,),
         (6,),
         (7,),
+        (8,),
     ]
     columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     assert {"study_area_geometry", "study_area_crs", "classification_config"}.issubset(columns)
