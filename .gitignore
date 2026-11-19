@@ -20,3 +20,6 @@ storage/
 # Environment
 .env
 project-test/
+
+# pid files + logs written by scripts/up.sh
+.run/

@@ -1,3 +1,22 @@
+# Full WBALC stack: engine + Next.js UI + optional SvelteKit research workspace
+# + optional Postgres.
+#
+#   ./scripts/dev.sh up            # everything that can run by default
+#   ./scripts/dev.sh up --postgres # ... with Postgres instead of SQLite
+#   ./scripts/dev.sh logs api      # tail one service
+#   ./scripts/dev.sh ps            # what is running and whether it is healthy
+#   ./scripts/dev.sh down -v       # stop and delete the data volumes
+#
+# Profiles exist because the default stack must stay one command:
+#   research  the bilingual SvelteKit research workspace (port 5173)
+#   postgres  Postgres 16 instead of the SQLite file in the API volume
+#
+# The API image already declares a HEALTHCHECK; the UI services depend on it
+# with `condition: service_healthy`, so a slow first boot cannot leave the UI
+# proxying to a dead engine.
+
+name: wbalc
+
 services:
   api:
     build:
@@ -5,15 +24,28 @@ services:
       args:
         # Override on slow/restricted networks via .env or --build-arg.
         PIP_INDEX_URL: "${PIP_INDEX_URL:-https://pypi.org/simple}"
+    image: wbalc/api:local
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     environment:
       STORAGE_DIR: /data/storage
-      # SQLite by default (inside the volume). For Postgres, start the
-      # `postgres` profile and set:
-      # DATABASE_URL: postgresql+asyncpg://rsal:rsal@db:5432/rsal
+      # Set by the postgres profile; empty string falls back to SQLite inside the
+      # volume, which is why it is not hard-coded with a default host.
+      DATABASE_URL: "${DATABASE_URL:-}"
     volumes:
       - rsal-data:/data
+    # Fails the container (rather than the first training run) if a native
+    # dependency is missing from the image — LightGBM needs libgomp.so.1.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+          && python -c "import lightgbm, sklearn, rasterio"
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   frontend:
@@ -21,26 +53,26 @@ services:
       context: ./frontend
       args:
         NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
+    image: wbalc/frontend:local
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
       RSAL_API_URL: http://api:8000
-    # Wait until the API healthcheck passes before starting the UI.
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
 
-  # Optional: bilingual SvelteKit research workspace example. Enable with:
-  #   docker compose --profile research up -d
+  # Optional bilingual SvelteKit research workspace.
   research-workspace:
     build:
       context: ./examples/wbalc-geospatial-research-interface
       args:
         NPM_REGISTRY: "${NPM_REGISTRY:-https://registry.npmjs.org}"
+    image: wbalc/research-workspace:local
     profiles: ["research"]
     ports:
-      - "5173:5173"
+      - "${RESEARCH_PORT:-5173}:5173"
     environment:
       RSAL_API_URL: http://api:8000
       PORT: 5173
@@ -50,23 +82,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Optional: production-style database. Enable with:
-  #   docker compose --profile postgres up -d
-  # and set DATABASE_URL on the api service as shown above.
+  # Optional production-style database.
   db:
     image: postgres:16-alpine
     profiles: ["postgres"]
     environment:
-      POSTGRES_USER: rsal
-      POSTGRES_PASSWORD: rsal
-      POSTGRES_DB: rsal
+      POSTGRES_USER: "${POSTGRES_USER:-rsal}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-rsal}"
+      POSTGRES_DB: "${POSTGRES_DB:-rsal}"
     volumes:
       - rsal-pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rsal"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rsal} -d ${POSTGRES_DB:-rsal}"]
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
 volumes:
   rsal-data:

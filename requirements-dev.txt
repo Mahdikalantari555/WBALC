@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=8.2
 httpx>=0.27
+# Compose-file validation (tests/test_compose_stack.py)
+pyyaml>=6.0
