@@ -1050,3 +1050,176 @@ class EarlyFusionRejected(BaseModel):
     error: str
     detail: str
     supported_rules: list[str]
+
+
+# ------------------------------------------------- research evaluation (Phase 5)
+class ProtocolRequest(BaseModel):
+    name: str = ""
+    protocol: Literal["random", "spatial", "temporal"] = "random"
+    seed: int = 42
+    test_size: float = Field(default=0.3, gt=0.0, lt=1.0)
+    block_size: float = Field(default=256.0, gt=0)
+    buffer: float = Field(default=0.0, ge=0)
+    spatial_unit: str = "pixels"
+    # Optional explicit dataset -> acquisition group mapping for temporal holdouts.
+    groups: dict[str, str] = Field(default_factory=dict)
+
+
+class ProtocolOut(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    protocol: str
+    status: str
+    reason: str | None = None
+    configuration: dict
+    train_count: int = 0
+    test_count: int = 0
+    held_out_groups: list[str] = []
+    split_hash: str | None = None
+    caveats: list[str] = []
+    created_at: datetime
+
+
+class ProtocolDetailOut(ProtocolOut):
+    split: dict
+
+
+class EvaluationRequest(BaseModel):
+    protocol_id: int
+    model_type: Literal["rf", "lightgbm"] = "rf"
+    resolution: Literal["patch", "pixel"] = "patch"
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluationResultOut(BaseModel):
+    id: int
+    project_id: int
+    protocol_id: int
+    protocol: str | None = None
+    split_hash: str | None = None
+    model_type: str
+    resolution: str
+    config: dict
+    metrics: dict
+    calibration: dict
+    coverage: dict
+    status: str
+    caveats: list[str]
+    created_at: datetime
+
+
+class ReferenceAreaCreate(BaseModel):
+    scene_id: int | None = None
+    label: str = ""
+    water_area_m2: float = Field(ge=0)
+    source: str = Field(min_length=1, max_length=255)
+    method: str = Field(min_length=1, max_length=1024)
+    uncertainty_m2: float | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+
+class ReferenceAreaOut(BaseModel):
+    id: int
+    project_id: int
+    scene_id: int | None = None
+    label: str
+    water_area_m2: float
+    source: str
+    method: str
+    uncertainty_m2: float | None = None
+    notes: str | None = None
+    created_at: datetime
+
+
+class AreaComparisonOut(BaseModel):
+    scene_id: int
+    analysis_id: int
+    mapped_area_m2: float
+    reference_area_m2: float
+    signed_error_m2: float
+    absolute_error_m2: float
+    relative_error: float | None = None
+    reference_source: str
+    reference_method: str
+    caveat: str
+
+
+class ResearchPlanCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    hypothesis: str | None = None
+    protocol_id: int | None = None
+    comparison_metric: str = "f1_macro"
+    factors: list[dict] = Field(default_factory=list)
+    repetitions: int = Field(default=1, ge=1, le=100)
+    resource_limits: dict = Field(default_factory=dict)
+    notes: str | None = None
+
+
+class ResearchPlanOut(BaseModel):
+    id: int
+    project_id: int
+    name: str
+    hypothesis: str | None = None
+    protocol_id: int | None = None
+    comparison_metric: str
+    factors: list[dict]
+    repetitions: int
+    resource_limits: dict
+    notes: str | None = None
+    created_at: datetime
+
+
+class PlanComparisonRequest(BaseModel):
+    plan_id: int
+    result_ids: list[int] = Field(default_factory=list)
+
+
+class PlanComparisonOut(BaseModel):
+    plan_id: int
+    comparison_metric: str
+    results: list[dict]
+    factors: list[dict]
+    shared: dict
+    differing: dict
+    paired: bool
+    caveats: list[str] = []
+
+
+class ReportRequest(BaseModel):
+    title: str = ""
+    run_ids: list[int] | None = None
+    protocol_ids: list[int] | None = None
+
+
+class ReportArtifact(BaseModel):
+    name: str
+    sha256: str
+    size_bytes: int
+    media_type: str
+
+
+class ReportOut(BaseModel):
+    id: int
+    project_id: int
+    title: str
+    status: str
+    digest: str | None = None
+    artifacts: dict
+    caveats: list[str]
+    scientific_status: dict
+    created_at: datetime
+
+
+class ReportDetailOut(ReportOut):
+    bundle: dict
+
+
+class ScientificStatusOut(BaseModel):
+    software_validation: str
+    scientific_validity: str
+    detail: str
+    protocols: int
+    results: int
+    reference_areas: int
+    reports: int

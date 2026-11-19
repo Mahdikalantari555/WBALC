@@ -791,6 +791,161 @@ def main() -> None:
                         rejected.text[:120],
                     )
 
+        # ------------------------------------------- research evaluation (Phase 5)
+        # Everything below goes through the adapter, so it proves the routes exist
+        # and that the view models keep the nulls the engine reported.
+        r = client.get(f"/api/projects/{pid}/research/status")
+        check(
+            "research status separates software from scientific validity",
+            r.status_code == 200
+            and r.json()["scientificValidity"] == "not established"
+            and "synthetic" in r.json()["softwareValidation"],
+            r.text[:160],
+        )
+
+        r = client.post(
+            f"/api/projects/{pid}/research/protocols",
+            json={"protocol": "random", "seed": 11, "testSize": 0.25},
+        )
+        check("declare random protocol via adapter", r.status_code == 201, r.text[:200])
+        protocol = r.json() if r.status_code == 201 else {}
+        check(
+            "protocol echoes split membership and hash",
+            protocol.get("status") == "ok"
+            and protocol.get("trainCount", 0) + protocol.get("testCount", 0) > 0
+            and protocol.get("splitHash") is not None,
+            str({k: protocol.get(k) for k in ("status", "trainCount", "testCount", "splitHash")})[:160],
+        )
+
+        r = client.post(
+            f"/api/projects/{pid}/research/protocols",
+            json={"protocol": "spatial", "seed": 11, "blockSize": 64, "buffer": 16},
+        )
+        check("declare spatial protocol via adapter", r.status_code == 201, r.text[:200])
+        spatial = r.json() if r.status_code == 201 else {}
+        if spatial.get("status") == "insufficient":
+            check(
+                "insufficient spatial split explains itself",
+                bool(spatial.get("reason")),
+                str(spatial.get("reason"))[:120],
+            )
+        else:
+            check(
+                "spatial split documents its block key",
+                "buffer" in spatial.get("configuration", {})
+                and spatial.get("configuration", {}).get("blockKey"),
+                str(spatial.get("configuration", {}))[:160],
+            )
+
+        r = client.get(f"/api/projects/{pid}/research/protocols")
+        check("adapter lists protocols", r.status_code == 200 and len(r.json()) == 2, r.text[:120])
+
+        if protocol.get("id"):
+            r = client.post(
+                f"/api/projects/{pid}/research/evaluations",
+                json={"protocolId": protocol["id"], "modelType": "rf", "resolution": "patch"},
+            )
+            check("held-out evaluation via adapter", r.status_code == 201, r.text[:200])
+            evaluation = r.json() if r.status_code == 201 else {}
+            undefined = [
+                key
+                for row in evaluation.get("classes", [])
+                for key in row.get("undefined", {})
+            ]
+            check(
+                "evaluation keeps split hash + per-class support",
+                evaluation.get("splitHash") is not None
+                and len(evaluation.get("classes", [])) >= 2
+                and all("support" in row for row in evaluation.get("classes", [])),
+                str(evaluation.get("nTest"))[:80],
+            )
+            check(
+                "undefined per-class metrics stay null with a reason",
+                all(
+                    row[key] is None
+                    for row in evaluation.get("classes", [])
+                    for key in row.get("undefined", {})
+                ),
+                str(undefined)[:120],
+            )
+            check(
+                "calibration is reported only with its sample count",
+                evaluation.get("calibration", {}).get("available") is False
+                or evaluation.get("calibration", {}).get("nSamples", 0) > 0,
+                str(evaluation.get("calibration", {}))[:160],
+            )
+            check(
+                "evaluation caveats say it refit on the training partition",
+                any("train" in caveat.lower() for caveat in evaluation.get("caveats", [])),
+                str(evaluation.get("caveats"))[:160],
+            )
+
+        # Area error is refused until an independent reference area exists.
+        r = client.post(
+            f"/api/projects/{pid}/research/reference-areas",
+            json={"waterAreaM2": -5, "source": "x", "method": "y"},
+        )
+        check("negative reference area rejected", r.status_code >= 400, r.text[:120])
+        r = client.post(
+            f"/api/projects/{pid}/research/reference-areas",
+            json={"waterAreaM2": 25_000, "source": "", "method": "digitised"},
+        )
+        check("reference area without a source rejected", r.status_code >= 400, r.text[:120])
+        r = client.post(
+            f"/api/projects/{pid}/research/reference-areas",
+            json={
+                "waterAreaM2": 25_000,
+                "source": "field survey 2026-01",
+                "method": "GNSS shoreline survey",
+            },
+        )
+        check("reference area with provenance", r.status_code == 201, r.text[:160])
+        r = client.get(f"/api/projects/{pid}/research/reference-areas")
+        check("adapter lists reference areas", r.status_code == 200 and len(r.json()) == 1, r.text[:120])
+
+        r = client.post(
+            f"/api/projects/{pid}/research/plans",
+            json={"name": "resolution ablation", "comparisonMetric": "f1_macro", "repetitions": 2},
+        )
+        check("declare research plan", r.status_code == 201, r.text[:160])
+        plan = r.json() if r.status_code == 201 else {}
+        if plan.get("id"):
+            r = client.post(
+                f"/api/projects/{pid}/research/plans/compare",
+                json={"planId": plan["id"]},
+            )
+            check("plan comparison exposes shared/differing factors", r.status_code == 200, r.text[:160])
+            if r.status_code == 200:
+                comparison = r.json()
+                check(
+                    "comparison reports a pairing verdict",
+                    isinstance(comparison.get("paired"), bool)
+                    and "differing" in comparison,
+                    str(comparison.get("paired")),
+                )
+
+        r = client.post(f"/api/projects/{pid}/research/reports", json={"title": "phase 5"})
+        check("generate report bundle", r.status_code == 201, r.text[:200])
+        report = r.json() if r.status_code == 201 else {}
+        check(
+            "bundle lists hashed artifacts + scientific status",
+            report.get("digest") is not None
+            and "json" in report.get("artifacts", {})
+            and report.get("scientificStatus", {}).get("scientificValidity") == "not established",
+            str(sorted(report.get("artifacts", {})))[:120],
+        )
+        if report.get("id"):
+            r = client.get(
+                f"/api/projects/{pid}/research/reports/{report['id']}/files/json"
+            )
+            check(
+                "report artifact downloads through the adapter",
+                r.status_code == 200 and len(r.content) > 0,
+                str(r.status_code),
+            )
+            r = client.get(f"/api/projects/{pid}/research/reports/{report['id']}/files/pdf")
+            check("unknown artifact kind rejected", r.status_code == 400, str(r.status_code))
+
         # ------------------------------------------------------- label import
         # A WGS84 feature derived from the dataset's own UTM origin.
         lon, lat = _utm_to_lonlat(500400.0, 4649500.0)

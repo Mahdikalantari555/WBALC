@@ -586,3 +586,236 @@ describe('fusion view model', () => {
     expect(view.fusedValidPixels).toBeNull();
   });
 });
+
+/* -------------------------------------------- research evaluation (Phase 5) */
+
+import {
+  toEvaluationResult,
+  toPlanComparison,
+  toProtocol,
+  toReport,
+  toScientificStatus,
+} from './server/adapter';
+import type {
+  RsalEvaluationResult,
+  RsalPlanComparison,
+  RsalProtocol,
+  RsalReport,
+  RsalScientificStatus,
+} from './server/rsal';
+
+const protocol = (overrides: Partial<RsalProtocol> = {}): RsalProtocol => ({
+  id: 2,
+  project_id: 1,
+  name: 'random split',
+  protocol: 'random',
+  status: 'ok',
+  reason: null,
+  configuration: { seed: 7, test_size: 0.3 },
+  train_count: 8,
+  test_count: 4,
+  held_out_groups: ['all'],
+  split_hash: 'f'.repeat(64),
+  caveats: ['Random holdout over labelled samples'],
+  created_at: '2026-01-01T00:00:00Z',
+  ...overrides,
+});
+
+const evaluation = (overrides: Partial<RsalEvaluationResult> = {}): RsalEvaluationResult => ({
+  id: 3,
+  project_id: 1,
+  protocol_id: 2,
+  protocol: 'random',
+  split_hash: 'f'.repeat(64),
+  model_type: 'rf',
+  resolution: 'patch',
+  config: { seed: 7 },
+  metrics: {
+    accuracy: 0.75,
+    balanced_accuracy: { value: 0.5, classes_used: ['water', 'land'], classes_missing: ['reed'] },
+    macro: { f1: { value: 0.4, classes_used: 2, classes_skipped: ['reed'], reason: 'undefined' } },
+    per_class: [
+      {
+        class_name: 'water',
+        class_index: 0,
+        support: 2,
+        predicted: 1,
+        precision: 0.5,
+        recall: 0.5,
+        f1: 0.5,
+        iou: 0.33,
+        specificity: 0.9,
+      },
+      {
+        class_name: 'reed',
+        class_index: 1,
+        support: 0,
+        predicted: 0,
+        precision: null,
+        recall: null,
+        f1: null,
+        iou: null,
+        specificity: null,
+        undefined: { recall: 'no held-out reference samples', precision: 'no sample was predicted as this class' },
+      },
+    ],
+    n_train: 8,
+    n_test: 2,
+    evaluation: 'random_holdout',
+    dropped: { train: 0, test: 1 },
+  },
+  calibration: {
+    available: true,
+    n_samples: 2,
+    expected_calibration_error: 0.12,
+    maximum_calibration_error: 0.3,
+    brier_score: 0.4,
+    method: 'equal-width bins',
+    caveat: 'held-out only',
+  },
+  coverage: {
+    available: true,
+    points: [{ threshold: 0.5, retained: 2, coverage: 1, accuracy: 0.5 }],
+    caveat: 'held-out only',
+  },
+  status: 'ok',
+  caveats: ['The evaluation model was refit on the training partition only'],
+  created_at: '2026-01-01T00:00:00Z',
+  ...overrides,
+});
+
+describe('protocol view model', () => {
+  it('keeps the split hash and the insufficiency reason', () => {
+    const view = toProtocol(protocol());
+    expect(view.status).toBe('ok');
+    expect(view.splitHash).toHaveLength(64);
+    expect(view.trainCount).toBe(8);
+
+    const insufficient = toProtocol(
+      protocol({ status: 'insufficient', reason: 'only 1 acquisition group', split_hash: null, train_count: 0 }),
+    );
+    expect(insufficient.status).toBe('insufficient');
+    expect(insufficient.reason).toContain('acquisition');
+    expect(insufficient.splitHash).toBeNull();
+  });
+});
+
+describe('evaluation result view model', () => {
+  it('carries undefined metrics as nulls with reasons, never as scores', () => {
+    const view = toEvaluationResult(evaluation());
+    const reed = view.classes[1];
+    expect(reed.precision).toBeNull();
+    expect(reed.recall).toBeNull();
+    expect(reed.undefined.recall).toContain('no held-out reference samples');
+    expect(view.classes[0].precision).toBe(0.5);
+    expect(view.balancedAccuracy?.value).toBe(0.5);
+    expect(view.balancedAccuracy?.classesUsed).toEqual(['water', 'land']);
+  });
+
+  it('reports calibration and coverage only when the engine measured them', () => {
+    const measured = toEvaluationResult(evaluation());
+    expect(measured.calibration.available).toBe(true);
+    expect(measured.calibration.expectedCalibrationError).toBeCloseTo(0.12);
+    expect(measured.coverage.points).toHaveLength(1);
+
+    const absent = toEvaluationResult(
+      evaluation({ calibration: { available: false, reason: 'no held-out samples' }, coverage: {} }),
+    );
+    expect(absent.calibration.available).toBe(false);
+    expect(absent.calibration.reason).toBe('no held-out samples');
+    expect(absent.calibration.expectedCalibrationError).toBeNull();
+    expect(absent.coverage.points).toEqual([]);
+  });
+
+  it('keeps the dropped-sample counts instead of pretending the split was complete', () => {
+    const view = toEvaluationResult(evaluation());
+    expect(view.dropped).toEqual({ train: 0, test: 1 });
+    expect(view.nTest).toBe(2);
+  });
+});
+
+describe('plan comparison view model', () => {
+  const comparison = (overrides: Partial<RsalPlanComparison> = {}): RsalPlanComparison => ({
+    plan_id: 1,
+    comparison_metric: 'f1_macro',
+    results: [
+      { result_id: 3, model_type: 'rf', resolution: 'patch', status: 'ok', value: 0.4, n_test: 2 },
+      { result_id: 4, model_type: 'rf', resolution: 'pixel', status: 'ok', value: 0.55, n_test: 2 },
+    ],
+    factors: [{ name: 'resolution', levels: ['patch', 'pixel'] }],
+    shared: { protocol_id: 2, protocol_split_hash: 'f'.repeat(64) },
+    differing: { resolution: ['patch', 'pixel'] },
+    paired: true,
+    caveats: ['Feature resolution differs'],
+    ...overrides,
+  });
+
+  it('exposes shared and differing factors with a pairing verdict', () => {
+    const view = toPlanComparison(comparison());
+    expect(view.paired).toBe(true);
+    expect(view.differing.resolution).toEqual(['patch', 'pixel']);
+    expect(view.results.map((row) => row.resultId)).toEqual(['3', '4']);
+  });
+
+  it('marks an unpaired comparison as such', () => {
+    const view = toPlanComparison(
+      comparison({ paired: false, shared: {}, caveats: ['not scored on the same persisted split'] }),
+    );
+    expect(view.paired).toBe(false);
+    expect(view.caveats[0]).toContain('same persisted split');
+  });
+});
+
+describe('report view model', () => {
+  const report = (overrides: Partial<RsalReport> = {}): RsalReport => ({
+    id: 5,
+    project_id: 1,
+    title: 'Run 1',
+    status: 'complete',
+    digest: 'd'.repeat(64),
+    artifacts: {
+      json: { name: 'r.json', sha256: 'a'.repeat(64), size_bytes: 100, media_type: 'application/json' },
+      markdown: { name: 'r.md', sha256: 'b'.repeat(64), size_bytes: 50, media_type: 'text/markdown' },
+    },
+    caveats: ['No independent reference area was supplied'],
+    scientific_status: {
+      software_validation: 'verified by automated tests',
+      scientific_validity: 'not established',
+      detail: 'synthetic fixtures only',
+    },
+    created_at: '2026-01-01T00:00:00Z',
+    ...overrides,
+  });
+
+  it('keeps the digest, artifacts and the scientific status', () => {
+    const view = toReport(report());
+    expect(view.digest).toHaveLength(64);
+    expect(Object.keys(view.artifacts)).toEqual(['json', 'markdown']);
+    expect(view.artifacts.json.sha256).toHaveLength(64);
+    expect(view.scientificStatus.scientificValidity).toBe('not established');
+    expect(view.caveats[0]).toContain('reference area');
+  });
+
+  it('never claims a scientific validity the engine did not assert', () => {
+    const view = toReport(report({ scientific_status: undefined as unknown as RsalReport['scientific_status'] }));
+    expect(view.scientificStatus.scientificValidity).toBe('unknown');
+  });
+});
+
+describe('scientific status view model', () => {
+  it('separates software validation from scientific validity', () => {
+    const status: RsalScientificStatus = {
+      software_validation: 'verified by automated tests on synthetic data',
+      scientific_validity: 'not established',
+      detail: 'requires operator-supplied independent reference data',
+      protocols: 2,
+      results: 1,
+      reference_areas: 0,
+      reports: 1,
+    };
+    const view = toScientificStatus(status);
+    expect(view.softwareValidation).toContain('synthetic');
+    expect(view.scientificValidity).toBe('not established');
+    expect(view.referenceAreas).toBe(0);
+  });
+});

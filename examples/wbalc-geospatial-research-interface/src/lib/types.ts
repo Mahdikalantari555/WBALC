@@ -513,3 +513,142 @@ export interface FusionView {
   fusionDigest: string | null;
   createdAt: string;
 }
+
+/* ------------------------------------------------ research evaluation (Phase 5) */
+
+export type ProtocolKind = 'random' | 'spatial' | 'temporal';
+
+export interface ProtocolView {
+  id: string;
+  name: string;
+  protocol: ProtocolKind;
+  /** 'insufficient' means the data could not support an independent split. */
+  status: 'ok' | 'insufficient';
+  reason: string | null;
+  trainCount: number;
+  testCount: number;
+  heldOutGroups: string[];
+  splitHash: string | null;
+  caveats: string[];
+  configuration: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface NamedMetricValue {
+  value: number | null;
+  classesUsed: string[];
+  classesSkipped: string[];
+  reason: string | null;
+}
+
+export interface ClassResultView {
+  className: string;
+  support: number;
+  predicted: number;
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
+  iou: number | null;
+  /** metric name → why it is null. A missing entry means the metric is defined. */
+  undefined: Record<string, string>;
+}
+
+export interface CalibrationView {
+  available: boolean;
+  reason: string | null;
+  nSamples: number | null;
+  expectedCalibrationError: number | null;
+  maximumCalibrationError: number | null;
+  brierScore: number | null;
+  method: string | null;
+  caveat: string | null;
+}
+
+export interface CoveragePointView {
+  threshold: number;
+  retained: number;
+  coverage: number;
+  accuracy: number | null;
+}
+
+export interface EvaluationResultView {
+  id: string;
+  protocolId: string;
+  protocol: string | null;
+  splitHash: string | null;
+  modelType: string;
+  resolution: string;
+  status: string;
+  accuracy: number | null;
+  balancedAccuracy: NamedMetricValue | null;
+  macro: Record<string, NamedMetricValue>;
+  classes: ClassResultView[];
+  nTrain: number | null;
+  nTest: number | null;
+  dropped: Record<string, unknown> | null;
+  calibration: CalibrationView;
+  coverage: { available: boolean; points: CoveragePointView[]; caveat: string | null };
+  caveats: string[];
+  createdAt: string;
+}
+
+export interface ReferenceAreaView {
+  id: string;
+  sceneId: string | null;
+  label: string;
+  waterAreaM2: number;
+  source: string;
+  method: string;
+  uncertaintyM2: number | null;
+  createdAt: string;
+}
+
+export interface ResearchPlanView {
+  id: string;
+  name: string;
+  hypothesis: string | null;
+  protocolId: string | null;
+  comparisonMetric: string;
+  factors: Record<string, unknown>[];
+  repetitions: number;
+  createdAt: string;
+}
+
+export interface PlanComparisonView {
+  planId: string;
+  comparisonMetric: string;
+  results: {
+    resultId: string;
+    modelType: string;
+    resolution: string;
+    status: string;
+    value: number | null;
+    nTest: number | null;
+  }[];
+  shared: Record<string, unknown>;
+  differing: Record<string, unknown>;
+  /** True only when every result was scored on the same persisted split. */
+  paired: boolean;
+  caveats: string[];
+}
+
+export interface ScientificStatusView {
+  softwareValidation: string;
+  scientificValidity: string;
+  detail: string;
+  protocols: number;
+  results: number;
+  referenceAreas: number;
+  reports: number;
+}
+
+export interface ReportView {
+  id: string;
+  title: string;
+  status: string;
+  digest: string | null;
+  artifacts: Record<string, { name: string; sha256: string; sizeBytes: number; mediaType: string }>;
+  caveats: string[];
+  scientificStatus: { softwareValidation: string; scientificValidity: string; detail: string };
+  createdAt: string;
+}

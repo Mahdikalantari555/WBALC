@@ -263,6 +263,8 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
         (6,),
         (7,),
         (8,),
+        (9,),
+        (10,),
     ]
     columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     assert {"study_area_geometry", "study_area_crs", "classification_config"}.issubset(columns)
@@ -271,6 +273,17 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
     # Phase 1 additions are additive too, and the legacy project did not acquire
     # water semantics it never opted into.
     assert "taxonomy" in columns
+    # Phase 5 tables exist and are equally additive.
+    research_tables = {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    assert {
+        "evaluation_protocols",
+        "evaluation_results",
+        "reference_areas",
+        "research_plans",
+        "research_reports",
+    }.issubset(research_tables)
     assert "submitted_class_name" in {
         row[1] for row in connection.execute("PRAGMA table_info(labels)")
     }

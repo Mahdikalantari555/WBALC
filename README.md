@@ -425,6 +425,85 @@ engine reports a grid mismatch, and a fusion panel listing per-source weights,
 alignment and agreement. **Results & Evaluation** gained a "Single-sensor vs fused
 products" panel so a fused number is always read next to the per-sensor evidence.
 
+## Research evaluation: protocols, benchmarks and reports
+
+Phase 5 turns "the model scored 0.87" into a claim that can be audited, or refuses to
+make it.
+
+### A protocol is a record, not a seed in a request
+
+```bash
+POST /projects/{id}/research/protocols
+{"protocol": "spatial", "seed": 7, "block_size": 256, "buffer": 32}
+```
+
+| kind | holds out | leak it prevents |
+| --- | --- | --- |
+| `random` | stratified samples by seed | none — the honest baseline, reported as such |
+| `spatial` | whole blocks, keyed `block:{dataset_id}:{row}:{col}`, buffer in pixels | neighbouring-patch correlation across the boundary |
+| `temporal` | entire acquisition groups | using the same date/scene on both sides |
+
+The response carries the full split membership, the held-out groups and a `split_hash`
+over the canonical split. A split the data cannot support is stored as `insufficient`
+with a reason — never silently downgraded to a random split, and never reported as a
+score. Spatial blocks include the dataset id, so two rasters sharing the same block
+coordinates are not mistaken for one.
+
+### Scoring only happens on the held-out partition
+
+`POST /projects/{id}/research/evaluations` refits a fresh model on the training
+partition and scores the held-out partition only; the production model is not reused
+(it has seen every labelled sample). Results keep a stable class order with per-class
+support, and any undefined metric is `null` with a per-class reason — a class that was
+never predicted gets `precision: null`, not `1.0`. Calibration (ECE, maximum CE,
+Brier) and a coverage curve are reported with their sample count, method and a
+"held-out only" caveat, or `available: false` with the reason.
+
+### Area error needs truth the engine did not produce
+
+```bash
+POST /projects/{id}/research/reference-areas
+{"water_area_m2": 25000, "source": "field survey 2026-01", "method": "GNSS shoreline survey"}
+```
+
+`area-error` answers `409` until both a reference area **and** a classified scene
+exist. Without one, mapped areas are labelled estimates and no error metric is
+reported. `scene-spread` refuses to pool pixels and aggregates per scene, stating the
+resampling unit.
+
+### Comparisons declare their controls
+
+A `ResearchPlan` records factors, levels, repetitions, comparison metric and holdout
+protocol before any run. `plans/compare` returns the shared and differing factors plus
+a `paired` verdict, which is `false` whenever the results were not scored on the same
+persisted split — the response then says so in its caveats rather than presenting the
+numbers as a controlled comparison.
+
+### Reports are regenerable views of stored records
+
+`POST /projects/{id}/research/reports` writes JSON, CSV and Markdown with per-artifact
+`sha256`/`size_bytes` and a canonical digest. Volatile fields (`created_at`, `path`,
+storage references) are stripped **and** `datetime`/`Decimal`/numpy scalars are coerced,
+so a regeneration from the same records hashes identically. Downloads re-verify the
+checksum; a tampered file is refused with `409`. Runs that predate manifests are listed
+as excluded with the reason instead of being dropped.
+
+`GET /projects/{id}/research/status` keeps the two questions apart:
+
+```
+software_validation : "verified by automated tests on synthetic data"
+scientific_validity : "not established"
+```
+
+### In the research workspace
+
+**Results & Evaluation** gained a research panel: the software/science status pair,
+protocol declaration and a protocol table showing train/test counts, the split hash and
+any insufficiency reason, held-out evaluation cards with per-class support and
+null-with-reason rows, calibration and dropped-sample counts, reference-area entry
+(source and method mandatory), plan comparison with the pairing verdict, and report
+generation with digest, artifact downloads and the stated limitations.
+
 ## Sampling history and annotation provenance
 
 Active-learning selections are no longer a browser artefact. Every successful
@@ -624,10 +703,12 @@ openspec/            # spec-driven change proposals + capability specs
 .venv/bin/python -m pytest
 ```
 
-171 backend tests cover project CRUD, legacy dataset workflows, labels, Active
-Learning, training/inference/exports, and synthetic multi-temporal scene scenarios
-(Sentinel-1/2 metadata, NoData/masks, optional dates, grid differences, ordering,
-isolated deletion, API responses, and migration of an RSAL-style project database).
+The suite now covers project CRUD, legacy dataset workflows, labels, Active
+Learning, training/inference/exports, synthetic multi-temporal scenes (Sentinel-1/2
+metadata, NoData/masks, optional dates, grid differences, ordering, isolated deletion,
+API responses), research protocols (random/spatial/temporal disjointness, buffer
+reach, insufficiency), held-out metric semantics, reference-area guards, report
+regeneration, and migration of an RSAL-style project database (versions 1…10).
 
 The frontend suite is `cd frontend && npm test` (25 node:test cases: shared
 pixel↔display transform, overlay colours, adapter payload builders).
@@ -642,9 +723,10 @@ npm run check:i18n     # en/fa dictionary completeness + placeholder parity
 ```
 
 Its browser-facing contract is verified end-to-end (project → upload → query →
-label → train → metrics/map/exports → scenes → import → delete → i18n) by
-`scripts/research_frontend_smoke.py`, which needs a live engine and the example
-running against it.
+label → train → metrics/map/exports → scenes → import → delete → protocols →
+held-out evaluation → reference area → plan comparison → report bundle → i18n) by
+`scripts/research_frontend_smoke.py` (140 checks), which needs a live engine and the
+example running against it.
 
 `scripts/audit_performance.py` measures the same app against a live engine
 (adapter overhead, raster streaming, query/train/inference cost, SSR) and

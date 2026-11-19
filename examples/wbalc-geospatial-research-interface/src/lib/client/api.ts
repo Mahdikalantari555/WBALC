@@ -24,6 +24,13 @@ import type {
   FusionView,
   TemporalComparisonView,
   TemporalSeriesView,
+  ProtocolView,
+  EvaluationResultView,
+  ReferenceAreaView,
+  ResearchPlanView,
+  PlanComparisonView,
+  ReportView,
+  ScientificStatusView,
 } from '$lib/types';
 
 export class ClientError extends Error {
@@ -274,6 +281,95 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
+
+  /* ------------------------------------------ research evaluation (Phase 5) */
+
+  protocols: (id: string) =>
+    request<ProtocolView[]>(`/api/projects/${enc(id)}/research/protocols`),
+
+  createProtocol: (
+    id: string,
+    body: {
+      name?: string;
+      protocol: 'random' | 'spatial' | 'temporal';
+      seed?: number;
+      testSize?: number;
+      blockSize?: number;
+      buffer?: number;
+    },
+  ) =>
+    request<ProtocolView>(`/api/projects/${enc(id)}/research/protocols`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  evaluations: (id: string) =>
+    request<EvaluationResultView[]>(`/api/projects/${enc(id)}/research/evaluations`),
+
+  /** Scores a protocol's held-out partition; the engine refits, it never reuses the production model. */
+  evaluate: (id: string, body: { protocolId: string; modelType?: 'rf' | 'lightgbm'; resolution?: 'patch' | 'pixel' }) =>
+    request<EvaluationResultView>(`/api/projects/${enc(id)}/research/evaluations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  referenceAreas: (id: string) =>
+    request<ReferenceAreaView[]>(`/api/projects/${enc(id)}/research/reference-areas`),
+
+  addReferenceArea: (
+    id: string,
+    body: {
+      sceneId?: string | null;
+      label?: string;
+      waterAreaM2: number;
+      source: string;
+      method: string;
+      uncertaintyM2?: number | null;
+    },
+  ) =>
+    request<ReferenceAreaView>(`/api/projects/${enc(id)}/research/reference-areas`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  researchPlans: (id: string) =>
+    request<ResearchPlanView[]>(`/api/projects/${enc(id)}/research/plans`),
+
+  createResearchPlan: (
+    id: string,
+    body: { name: string; hypothesis?: string | null; comparisonMetric?: string; repetitions?: number },
+  ) =>
+    request<ResearchPlanView>(`/api/projects/${enc(id)}/research/plans`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  comparePlan: (id: string, body: { planId: string; resultIds?: string[] }) =>
+    request<PlanComparisonView>(`/api/projects/${enc(id)}/research/plans/compare`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  reports: (id: string) => request<ReportView[]>(`/api/projects/${enc(id)}/research/reports`),
+
+  createReport: (id: string, body: { title?: string } = {}) =>
+    request<ReportView>(`/api/projects/${enc(id)}/research/reports`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  scientificStatus: (id: string) =>
+    request<ScientificStatusView>(`/api/projects/${enc(id)}/research/status`),
+
+  /** Download URL (not fetched): a checksum-verified report artifact. */
+  reportUrl: (id: string, reportId: string, kind: 'json' | 'csv' | 'markdown') =>
+    `/api/projects/${enc(id)}/research/reports/${enc(reportId)}/files/${enc(kind)}`,
 
   /** Download URL (not fetched): a scene product the engine verified. */
   sceneExportUrl: (id: string, analysisId: string, kind: 'hard' | 'probability' | 'uncertainty') =>

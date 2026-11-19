@@ -42,6 +42,19 @@ class Project(Base):
     query_batches: Mapped[list["QueryBatch"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    # Phase 3-5 records have no `project` back-reference of their own; declaring the
+    # cascade here keeps `DELETE /projects/{id}` from leaving orphans behind.
+    scene_analyses: Mapped[list["SceneAnalysis"]] = relationship(cascade="all, delete-orphan")
+    fusion_runs: Mapped[list["FusionRun"]] = relationship(cascade="all, delete-orphan")
+    evaluation_protocols: Mapped[list["EvaluationProtocol"]] = relationship(
+        cascade="all, delete-orphan"
+    )
+    evaluation_results: Mapped[list["EvaluationResult"]] = relationship(
+        cascade="all, delete-orphan"
+    )
+    reference_areas: Mapped[list["ReferenceArea"]] = relationship(cascade="all, delete-orphan")
+    research_plans: Mapped[list["ResearchPlan"]] = relationship(cascade="all, delete-orphan")
+    research_reports: Mapped[list["ResearchReport"]] = relationship(cascade="all, delete-orphan")
 
 
 class Scene(Base):
@@ -333,6 +346,115 @@ class FusionRun(Base):
     areas: Mapped[dict] = mapped_column(JSON, default=dict)
     agreement: Mapped[dict] = mapped_column(JSON, default=dict)
     lineage: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EvaluationProtocol(Base):
+    """A declared, persisted evaluation split.
+
+    The split membership is stored (not re-derived), so a report generated later
+    describes exactly the partition that produced the score.
+    """
+
+    __tablename__ = "evaluation_protocols"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), default="")
+    protocol: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="ok", nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    configuration: Mapped[dict] = mapped_column(JSON, default=dict)
+    split: Mapped[dict] = mapped_column(JSON, default=dict)
+    split_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    caveats: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EvaluationResult(Base):
+    """Metrics produced by scoring a model on a protocol's held-out partition."""
+
+    __tablename__ = "evaluation_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    protocol_id: Mapped[int] = mapped_column(
+        ForeignKey("evaluation_protocols.id", ondelete="CASCADE"), index=True
+    )
+    protocol_split_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_type: Mapped[str] = mapped_column(String(50))
+    resolution: Mapped[str] = mapped_column(String(20), default="patch")
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    calibration: Mapped[dict] = mapped_column(JSON, default=dict)
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="ok")
+    caveats: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReferenceArea(Base):
+    """An operator-supplied independent reference area for one scene.
+
+    Area error is only computed against a record like this: the engine never uses
+    its own mapped area as its own truth.
+    """
+
+    __tablename__ = "reference_areas"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    scene_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    label: Mapped[str] = mapped_column(String(255), default="")
+    water_area_m2: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    method: Mapped[str] = mapped_column(String(1024), nullable=False)
+    uncertainty_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResearchPlan(Base):
+    """A declared comparison: factors, levels, repetitions and limits, before runs."""
+
+    __tablename__ = "research_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    hypothesis: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    protocol_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    comparison_metric: Mapped[str] = mapped_column(String(64), default="f1_macro")
+    factors: Mapped[list] = mapped_column(JSON, default=list)
+    repetitions: Mapped[int] = mapped_column(Integer, default=1)
+    resource_limits: Mapped[dict] = mapped_column(JSON, default=dict)
+    notes: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResearchReport(Base):
+    """A generated report bundle: files, checksums and what it could not claim."""
+
+    __tablename__ = "research_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(20), default="complete")
+    bundle: Mapped[dict] = mapped_column(JSON, default=dict)
+    artifacts: Mapped[dict] = mapped_column(JSON, default=dict)
+    caveats: Mapped[list] = mapped_column(JSON, default=list)
+    digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

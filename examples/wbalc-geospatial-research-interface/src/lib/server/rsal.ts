@@ -592,6 +592,147 @@ export interface RsalFusion {
   created_at: string;
 }
 
+export interface RsalProtocol {
+  id: number;
+  project_id: number;
+  name: string;
+  protocol: 'random' | 'spatial' | 'temporal';
+  status: 'ok' | 'insufficient';
+  reason: string | null;
+  configuration: Record<string, unknown>;
+  train_count: number;
+  test_count: number;
+  held_out_groups: string[];
+  split_hash: string | null;
+  caveats: string[];
+  created_at: string;
+  split?: {
+    train?: string[];
+    test?: string[];
+    groups?: { group: string; members: string[]; role: string }[];
+    overlap?: string[];
+    excluded?: string[];
+    train_class_support?: Record<string, number>;
+    test_class_support?: Record<string, number>;
+  };
+}
+
+export interface RsalUndefinedMap {
+  [metric: string]: string;
+}
+
+export interface RsalClassRow {
+  class_name: string;
+  class_index: number;
+  support: number;
+  predicted: number;
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
+  iou: number | null;
+  specificity: number | null;
+  undefined?: RsalUndefinedMap;
+}
+
+export interface RsalEvaluationResult {
+  id: number;
+  project_id: number;
+  protocol_id: number;
+  protocol: string | null;
+  split_hash: string | null;
+  model_type: string;
+  resolution: string;
+  config: Record<string, unknown>;
+  metrics: {
+    accuracy?: number | null;
+    balanced_accuracy?: { value: number | null; classes_used?: string[]; classes_missing?: string[]; reason?: string | null };
+    macro?: Record<string, { value: number | null; classes_used: number; classes_skipped: string[]; reason: string | null }>;
+    per_class?: RsalClassRow[];
+    n_train?: number;
+    n_test?: number;
+    evaluation?: string;
+    insufficient?: boolean;
+    dropped?: Record<string, unknown>;
+  };
+  calibration: Record<string, unknown>;
+  coverage: Record<string, unknown>;
+  status: string;
+  caveats: string[];
+  created_at: string;
+}
+
+export interface RsalReferenceArea {
+  id: number;
+  project_id: number;
+  scene_id: number | null;
+  label: string;
+  water_area_m2: number;
+  source: string;
+  method: string;
+  uncertainty_m2: number | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface RsalResearchPlan {
+  id: number;
+  project_id: number;
+  name: string;
+  hypothesis: string | null;
+  protocol_id: number | null;
+  comparison_metric: string;
+  factors: Record<string, unknown>[];
+  repetitions: number;
+  resource_limits: Record<string, unknown>;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface RsalPlanComparison {
+  plan_id: number;
+  comparison_metric: string;
+  results: {
+    result_id: number;
+    model_type: string;
+    resolution: string;
+    status: string;
+    value: number | null;
+    n_test: number | null;
+  }[];
+  factors: Record<string, unknown>[];
+  shared: Record<string, unknown>;
+  differing: Record<string, unknown>;
+  paired: boolean;
+  caveats: string[];
+}
+
+export interface RsalReport {
+  id: number;
+  project_id: number;
+  title: string;
+  status: string;
+  digest: string | null;
+  artifacts: Record<string, { name: string; sha256: string; size_bytes: number; media_type: string }>;
+  caveats: string[];
+  scientific_status: {
+    software_validation: string;
+    scientific_validity: string;
+    detail: string;
+  };
+  created_at: string;
+  bundle?: Record<string, unknown>;
+}
+
+export interface RsalScientificStatus {
+  software_validation: string;
+  scientific_validity: string;
+  detail: string;
+  protocols: number;
+  results: number;
+  reference_areas: number;
+  reports: number;
+}
+
 export interface RsalTrainResponse {
   id: number;
   project_id: number;

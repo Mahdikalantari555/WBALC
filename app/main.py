@@ -15,6 +15,7 @@ from .api import (
     lineage,
     projects,
     query,
+    research,
     scenes,
     som,
     temporal,
@@ -68,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(inference.router)
     app.include_router(lineage.router)
     app.include_router(temporal.router)
+    app.include_router(research.router)
 
     @app.get("/health", tags=["health"])
     async def health():

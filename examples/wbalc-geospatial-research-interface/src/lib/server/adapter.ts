@@ -30,6 +30,14 @@ import type {
   TemporalDateView,
   TemporalSeriesView,
   FusionView,
+  ProtocolView,
+  EvaluationResultView,
+  ReferenceAreaView,
+  ResearchPlanView,
+  PlanComparisonView,
+  ReportView,
+  ScientificStatusView,
+  NamedMetricValue,
 } from '$lib/types';
 import type {
   RsalBinarySummary,
@@ -52,6 +60,13 @@ import type {
   RsalSceneAnalysis,
   RsalTemporalComparison,
   RsalTemporalSeries,
+  RsalProtocol,
+  RsalEvaluationResult,
+  RsalReferenceArea,
+  RsalResearchPlan,
+  RsalPlanComparison,
+  RsalReport,
+  RsalScientificStatus,
   RsalTrainResponse,
 } from './rsal';
 
@@ -733,5 +748,186 @@ export function toFusion(fusion: RsalFusion): FusionView {
         : null,
     fusionDigest: (fusion.lineage?.fusion_digest as string | undefined) ?? null,
     createdAt: fusion.created_at,
+  };
+}
+
+/* -------------------------------------------- research evaluation (Phase 5) */
+
+function namedMetric(value: unknown): NamedMetricValue | null {
+  if (!value || typeof value !== 'object') return null;
+  const entry = value as { value?: number | null; classes_used?: string[]; classes_skipped?: string[]; reason?: string | null };
+  return {
+    value: typeof entry.value === 'number' ? entry.value : null,
+    classesUsed: entry.classes_used ?? [],
+    classesSkipped: entry.classes_skipped ?? [],
+    reason: entry.reason ?? null,
+  };
+}
+
+export function toProtocol(protocol: RsalProtocol): ProtocolView {
+  return {
+    id: String(protocol.id),
+    name: protocol.name,
+    protocol: protocol.protocol,
+    status: protocol.status,
+    reason: protocol.reason,
+    trainCount: protocol.train_count,
+    testCount: protocol.test_count,
+    heldOutGroups: protocol.held_out_groups ?? [],
+    splitHash: protocol.split_hash,
+    caveats: protocol.caveats ?? [],
+    configuration: protocol.configuration ?? {},
+    createdAt: protocol.created_at,
+  };
+}
+
+export function toEvaluationResult(result: RsalEvaluationResult): EvaluationResultView {
+  const metrics = result.metrics ?? {};
+  const calibrationBlock = (result.calibration ?? {}) as Record<string, unknown>;
+  const coverageBlock = (result.coverage ?? {}) as Record<string, unknown>;
+  const macro: Record<string, NamedMetricValue> = {};
+  for (const [key, value] of Object.entries(metrics.macro ?? {})) {
+    const parsed = namedMetric(value);
+    if (parsed) macro[key] = parsed;
+  }
+  return {
+    id: String(result.id),
+    protocolId: String(result.protocol_id),
+    protocol: result.protocol,
+    splitHash: result.split_hash,
+    modelType: result.model_type,
+    resolution: result.resolution,
+    status: result.status,
+    accuracy: typeof metrics.accuracy === 'number' ? metrics.accuracy : null,
+    balancedAccuracy: namedMetric(metrics.balanced_accuracy),
+    macro,
+    classes: (metrics.per_class ?? []).map((row) => ({
+      className: row.class_name,
+      support: row.support,
+      predicted: row.predicted,
+      precision: row.precision,
+      recall: row.recall,
+      f1: row.f1,
+      iou: row.iou,
+      // Undefined metrics are reported with their reason, never as 1.0 or 0.0.
+      undefined: row.undefined ?? {},
+    })),
+    nTrain: typeof metrics.n_train === 'number' ? metrics.n_train : null,
+    nTest: typeof metrics.n_test === 'number' ? metrics.n_test : null,
+    dropped: (metrics.dropped as Record<string, unknown> | undefined) ?? null,
+    calibration: {
+      available: Boolean(calibrationBlock.available),
+      reason: (calibrationBlock.reason as string | undefined) ?? null,
+      nSamples: typeof calibrationBlock.n_samples === 'number' ? (calibrationBlock.n_samples as number) : null,
+      expectedCalibrationError:
+        typeof calibrationBlock.expected_calibration_error === 'number'
+          ? (calibrationBlock.expected_calibration_error as number)
+          : null,
+      maximumCalibrationError:
+        typeof calibrationBlock.maximum_calibration_error === 'number'
+          ? (calibrationBlock.maximum_calibration_error as number)
+          : null,
+      brierScore: typeof calibrationBlock.brier_score === 'number' ? (calibrationBlock.brier_score as number) : null,
+      method: (calibrationBlock.method as string | undefined) ?? null,
+      caveat: (calibrationBlock.caveat as string | undefined) ?? null,
+    },
+    coverage: {
+      available: Boolean(coverageBlock.available),
+      points: Array.isArray(coverageBlock.points)
+        ? (coverageBlock.points as Record<string, unknown>[]).map((point) => ({
+            threshold: Number(point.threshold ?? 0),
+            retained: Number(point.retained ?? 0),
+            coverage: Number(point.coverage ?? 0),
+            accuracy: typeof point.accuracy === 'number' ? (point.accuracy as number) : null,
+          }))
+        : [],
+      caveat: (coverageBlock.caveat as string | undefined) ?? null,
+    },
+    caveats: result.caveats ?? [],
+    createdAt: result.created_at,
+  };
+}
+
+export function toReferenceArea(area: RsalReferenceArea): ReferenceAreaView {
+  return {
+    id: String(area.id),
+    sceneId: area.scene_id === null ? null : String(area.scene_id),
+    label: area.label,
+    waterAreaM2: area.water_area_m2,
+    source: area.source,
+    method: area.method,
+    uncertaintyM2: area.uncertainty_m2,
+    createdAt: area.created_at,
+  };
+}
+
+export function toResearchPlan(plan: RsalResearchPlan): ResearchPlanView {
+  return {
+    id: String(plan.id),
+    name: plan.name,
+    hypothesis: plan.hypothesis,
+    protocolId: plan.protocol_id === null ? null : String(plan.protocol_id),
+    comparisonMetric: plan.comparison_metric,
+    factors: plan.factors ?? [],
+    repetitions: plan.repetitions,
+    createdAt: plan.created_at,
+  };
+}
+
+export function toPlanComparison(comparison: RsalPlanComparison): PlanComparisonView {
+  return {
+    planId: String(comparison.plan_id),
+    comparisonMetric: comparison.comparison_metric,
+    results: (comparison.results ?? []).map((row) => ({
+      resultId: String(row.result_id),
+      modelType: row.model_type,
+      resolution: row.resolution,
+      status: row.status,
+      value: row.value,
+      nTest: row.n_test,
+    })),
+    shared: comparison.shared ?? {},
+    differing: comparison.differing ?? {},
+    paired: comparison.paired,
+    caveats: comparison.caveats ?? [],
+  };
+}
+
+export function toReport(report: RsalReport): ReportView {
+  return {
+    id: String(report.id),
+    title: report.title,
+    status: report.status,
+    digest: report.digest,
+    artifacts: Object.fromEntries(
+      Object.entries(report.artifacts ?? {}).map(([kind, entry]) => [
+        kind,
+        {
+          name: entry.name,
+          sha256: entry.sha256,
+          sizeBytes: entry.size_bytes,
+          mediaType: entry.media_type,
+        },
+      ]),
+    ),
+    caveats: report.caveats ?? [],
+    scientificStatus: {
+      softwareValidation: report.scientific_status?.software_validation ?? 'unknown',
+      scientificValidity: report.scientific_status?.scientific_validity ?? 'unknown',
+      detail: report.scientific_status?.detail ?? '',
+    },
+    createdAt: report.created_at,
+  };
+}
+
+export function toScientificStatus(status: RsalScientificStatus): ScientificStatusView {
+  return {
+    softwareValidation: status.software_validation,
+    scientificValidity: status.scientific_validity,
+    detail: status.detail,
+    protocols: status.protocols,
+    results: status.results,
+    referenceAreas: status.reference_areas,
+    reports: status.reports,
   };
 }
