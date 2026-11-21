@@ -15,6 +15,22 @@
   let editing = $state(false);
   const bands = $derived(Array.from({ length: dataset.bands }, (_, i) => dataset.bandNames?.[i] || `#${i + 1}`));
   const key = () => `wbalc:layers:${workspace.project?.id}:${dataset.id}:${dataset.contentSha256 ?? dataset.createdAt}`;
+  /**
+   * One-click indices: only offered when the raster actually carries the bands.
+   * They preview through the same recipe mechanism but never pollute the user's
+   * saved custom recipes.
+   */
+  const presets = $derived.by(() => {
+    const at = (...aliases: string[]) => bands.findIndex(band => aliases.includes(band.trim().toLowerCase()));
+    const green = at('green', 'b03', 'b3');
+    const nir = at('nir08', 'nir', 'b08', 'b8');
+    const swir16 = at('swir16', 'b11');
+    const out: Recipe[] = [];
+    if (green >= 0 && nir >= 0 && green !== nir) out.push({ name: 'NDWI', a: green, b: nir });
+    if (green >= 0 && swir16 >= 0 && green !== swir16) out.push({ name: 'MNDWI', a: green, b: swir16 });
+    if (nir >= 0 && swir16 >= 0 && nir !== swir16) out.push({ name: 'NDMI', a: nir, b: swir16 });
+    return out;
+  });
   onMount(() => {
     try {
       const saved: unknown = JSON.parse(localStorage.getItem(key()) ?? '[]');
@@ -60,6 +76,18 @@
       <button class="button small quiet" aria-pressed={workspace.map.bandMode === `band:${index}`} onclick={() => show(`band:${index}`)}>{band}</button>
     {/each}
   </div>
+  {#if presets.length}
+    <h3>{t('layer.presets')}</h3>
+    <div class="chips">
+      {#each presets as preset (preset.name)}
+        <button
+          class="button small quiet"
+          aria-pressed={workspace.activeRecipe?.raster === key() && workspace.activeRecipe?.name === preset.name && workspace.map.bandMode === `nd:${preset.a}:${preset.b}`}
+          onclick={() => showRecipe(preset)}
+        >{preset.name}</button>
+      {/each}
+    </div>
+  {/if}
   {#if recipes.length}
     <h3>{t('layer.custom')}</h3>
     {#each recipes as recipe (recipe.name)}

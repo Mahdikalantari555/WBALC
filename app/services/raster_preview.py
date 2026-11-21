@@ -24,6 +24,21 @@ ALIASES = {
     'nir': {'nir', 'nir08', 'nir_08', 'b08', 'b8'},
 }
 
+# Green-first normalized differences read as water indices: high values are
+# open water, so the browser preview and this GDAL fallback share the blue ramp.
+WATER_HIGH_ALIASES = {
+    'nir', 'nir08', 'nir_08', 'b08', 'b8',
+    'swir16', 'swir_16', 'b11',
+    'swir22', 'swir_22', 'b12',
+}
+
+
+def _is_water_difference(names: Sequence[str | None] | None, first: int, second: int) -> bool:
+    normalized = [value.strip().casefold() if value else '' for value in (names or [])]
+    if first >= len(normalized) or second >= len(normalized):
+        return False
+    return normalized[first] in ALIASES['green'] and normalized[second] in WATER_HIGH_ALIASES
+
 
 def _channels(mode: str, count: int, names: Sequence[str | None] | None):
     normalized = [value.strip().casefold() if value else '' for value in (names or [])]
@@ -154,9 +169,15 @@ def render_raster_preview(
                 index = np.zeros_like(a, dtype=np.float32)
                 np.divide(a - b, denominator, out=index, where=valid)
                 value = np.clip((index + 1.0) / 2.0, 0.0, 1.0)
-                rgb[..., 0] = np.round(225 * (1 - value) + 25 * value).astype(np.uint8)
-                rgb[..., 1] = np.round(115 * (1 - value) + 175 * value).astype(np.uint8)
-                rgb[..., 2] = np.round(80 * (1 - value) + 72 * value).astype(np.uint8)
+                # Water indices share the browser's land→water blue ramp.
+                if _is_water_difference(band_names, first, second):
+                    rgb[..., 0] = np.round(225 * (1 - value) + 25 * value).astype(np.uint8)
+                    rgb[..., 1] = np.round(115 * (1 - value) + 110 * value).astype(np.uint8)
+                    rgb[..., 2] = np.round(80 * (1 - value) + 175 * value).astype(np.uint8)
+                else:
+                    rgb[..., 0] = np.round(225 * (1 - value) + 25 * value).astype(np.uint8)
+                    rgb[..., 1] = np.round(115 * (1 - value) + 175 * value).astype(np.uint8)
+                    rgb[..., 2] = np.round(80 * (1 - value) + 72 * value).astype(np.uint8)
                 alpha = np.where(valid, 255, 0).astype(np.uint8)
             else:
                 for channel, band in enumerate(channels):

@@ -18,6 +18,14 @@ from ..schemas import SceneOut, SceneSpatialOut
 from ..services.raster_service import RasterError, extract_scene_metadata
 from ..services.schema_service import build_band_schema
 from ..services.raster_preview import PreviewError, inspect_raster_pixel, render_raster_preview
+from ..services.mask_service import StudyAreaError, study_area_mask
+from ..services.water_threshold_service import (
+    WaterThresholdError,
+    compute_water_threshold,
+    resolve_index,
+    valid_to_json,
+    values_to_json,
+)
 from ..storage import project_dir, unique_name
 from .deps import SessionDep, SettingsDep, get_project
 
@@ -391,6 +399,77 @@ async def inspect_scene_pixel(
         )
     except PreviewError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{scene_id}/water-threshold")
+async def scene_water_threshold(
+    project_id: int,
+    scene_id: int,
+    session: SessionDep,
+    index: str | None = Query(default=None),
+) -> dict:
+    """Model-free water detection on the scene's native grid.
+
+    One index (spectral or SAR), one Otsu threshold over the scene's own valid
+    pixels, one binary mask clipped to the project study area when one is
+    configured. Nothing is trained, nothing is persisted: the response carries
+    the threshold and its provenance so a reader can reproduce the product.
+    """
+    project = await get_project(session, project_id)
+    scene = await session.get(Scene, scene_id)
+    if scene is None or scene.project_id != project_id or not Path(scene.storage_path).is_file():
+        raise HTTPException(404, "Scene file not found in this project")
+    try:
+        chosen = resolve_index(scene.sensor, index)
+    except WaterThresholdError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def compute() -> tuple[dict, str]:
+        try:
+            mask, study_note = study_area_mask(
+                project.study_area_geometry,
+                project.study_area_crs,
+                scene.crs,
+                scene.transform,
+                height=scene.height,
+                width=scene.width,
+                shape=(scene.height, scene.width),
+            )
+        except StudyAreaError as exc:
+            raise WaterThresholdError(str(exc)) from exc
+        return (
+            compute_water_threshold(
+                scene.storage_path,
+                chosen,
+                list(scene.band_names or []),
+                scene.nodata_values,
+                study_area=mask,
+            ),
+            study_note,
+        )
+
+    try:
+        result, study_note = await anyio.to_thread.run_sync(compute)
+    except WaterThresholdError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return {
+        "scene_id": scene.id,
+        "sensor": scene.sensor,
+        "index": result.index,
+        "bands": list(result.bands),
+        "direction": result.direction,
+        "threshold": result.threshold,
+        "method": result.method,
+        "grid": result.grid,
+        "classes": ["non_water", "water"],
+        "values": values_to_json(result.values),
+        "valid": valid_to_json(result.valid),
+        "counts": result.counts,
+        "areas": result.areas,
+        "study_area": study_note,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
 
 
 @router.get("/{scene_id}/spatial", response_model=SceneSpatialOut)

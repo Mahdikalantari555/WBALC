@@ -34,7 +34,7 @@ export const views = {
 } as const;
 
 export type ViewId = keyof typeof views;
-export type MapLayer = 'imagery' | 'classification' | 'binary' | 'uncertainty' | 'samples';
+export type MapLayer = 'imagery' | 'classification' | 'binary' | 'uncertainty' | 'threshold' | 'samples';
 export type { BandMode } from './raster';
 import type { BandMode } from './raster';
 export type UncertaintyMethod = 'entropy' | 'margin' | 'least_confidence';
@@ -110,6 +110,7 @@ class Workspace {
       classification: true,
       binary: false,
       uncertainty: false,
+      threshold: false,
       samples: true,
     } as Record<
       MapLayer,

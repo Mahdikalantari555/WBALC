@@ -5,10 +5,10 @@
   import { applyAffine, assessGeoreferencing, datasetBounds as wgsBounds, cellWindow, toWgs84 } from '$lib/geo';
   import { renderClassOverlay, renderUncertaintyOverlay, classColors, BINARY_COLORS, UNCERTAINTY_RAMP } from '$lib/palette';
   import { sourcePixel } from '$lib/map-inspection';
-  import { channelsFor, inspectRasterPixel, renderRaster, type BandMode } from '$lib/raster';
+  import { channelsFor, inspectRasterPixel, renderRaster, renderWaterOverlay, waterIndexRamp, type BandMode } from '$lib/raster';
   import { getWorkspace, type Selection } from '$lib/state.svelte';
   import { useT } from '$lib/t.svelte';
-  import type { DatasetView, LabelView, MapFieldView } from '$lib/types';
+  import type { DatasetView, LabelView, MapFieldView, WaterThresholdView } from '$lib/types';
 
   let {
     dataset,
@@ -16,6 +16,7 @@
     hard,
     uncertainty,
     binaryField,
+    threshold = null,
     labels,
     onselect,
   }: {
@@ -24,6 +25,7 @@
     hard: MapFieldView | null;
     uncertainty: MapFieldView | null;
     binaryField: MapFieldView | null;
+    threshold?: WaterThresholdView | null;
     labels: LabelView[];
     onselect: (feature: Selection) => void;
   } = $props();
@@ -90,6 +92,7 @@
     setRight: (url: string | null) => void;
     setSplit: (value: number) => void;
     setClass: (url: string | null) => void;
+    setThreshold: (url: string | null) => void;
     setUncertainty: (url: string | null) => void;
     setLabels: (labels: LabelView[]) => void;
     refreshStyles: () => void;
@@ -111,6 +114,7 @@
     return t('ux.activeBand', { name: dataset.bandNames?.[index] || `#${index + 1}` });
   });
   const colors = $derived(classColors(hard?.classes ?? workspace.project?.classes ?? []));
+  const ndRamp = $derived(waterIndexRamp(leftMode, dataset.bandNames));
 
   /** Ignore stale reads when users flip bands rapidly or navigate away. */
   $effect(() => {
@@ -141,6 +145,11 @@
     return renderUncertaintyOverlay(uncertainty.values, uncertainty.valid, uncertainty.min, uncertainty.max);
   });
 
+  const thresholdOverlay = $derived.by(() => {
+    if (!threshold || typeof document === 'undefined') return null;
+    return renderWaterOverlay(threshold.values);
+  });
+
   onMount(() => {
     let disposed = false;
     import('leaflet')
@@ -165,6 +174,9 @@
   $effect(() => { runtime?.setSplit(split); });
   $effect(() => {
     runtime?.setClass(workspace.map.layers.classification ? classOverlay : null);
+  });
+  $effect(() => {
+    runtime?.setThreshold(workspace.map.layers.threshold ? thresholdOverlay : null);
   });
   $effect(() => {
     runtime?.setUncertainty(workspace.map.layers.uncertainty ? uncertaintyOverlay : null);
@@ -246,6 +258,7 @@
     };
     const imageryPane = pane('wbalc-imagery', 210);
     const classPane = pane('wbalc-class', 240);
+    const thresholdPane = pane('wbalc-threshold', 245);
     const uncertaintyPane = pane('wbalc-uncertainty', 250);
     const labelPane = pane('wbalc-labels', 280, true);
 
@@ -255,6 +268,7 @@
     let boundary = 50;
     let imageryLayer: import('leaflet').ImageOverlay | null = null;
     let classLayer: import('leaflet').ImageOverlay | null = null;
+    let thresholdLayer: import('leaflet').ImageOverlay | null = null;
     let uncertaintyLayer: import('leaflet').ImageOverlay | null = null;
     const labelLayer = L.layerGroup().addTo(map);
     const cellLayer = L.layerGroup().addTo(map);
@@ -306,6 +320,15 @@
       if (!url) return;
       classLayer = overlay(url, 0.8, classPane).addTo(map);
       styleClass();
+    }
+
+    function setThreshold(url: string | null) {
+      if (thresholdLayer) {
+        map.removeLayer(thresholdLayer);
+        thresholdLayer = null;
+      }
+      if (!url) return;
+      thresholdLayer = overlay(url, 0.55, thresholdPane).addTo(map);
     }
 
     function setUncertainty(url: string | null) {
@@ -431,6 +454,7 @@
       setRight,
       setSplit: (value: number) => { boundary = value; applySplit(); },
       setClass,
+      setThreshold,
       setUncertainty,
       setLabels,
       refreshStyles,
@@ -540,6 +564,14 @@
             <span class="chip" style:--chip-color={colors[name]}><i></i>{name}</span>
           {/each}
         </div>
+      {:else if workspace.map.layers.threshold && threshold}
+        <span class="section-label"><Droplets size={12} /> {t('map.layer.threshold')}</span>
+        <div class="chip-row">
+          <span class="chip" style:--chip-color="rgb(30, 120, 200)"><i></i>{t('map.binary.water')}</span>
+        </div>
+        <p class="legend-note">{t('map.threshold.method', { index: threshold.index.toUpperCase(), method: threshold.method, threshold: number(threshold.threshold, 4) })}</p>
+        <p class="legend-note">{t('map.threshold.direction', { word: t(threshold.direction === 'below' ? 'map.threshold.below' : 'map.threshold.above') })}</p>
+        <p class="legend-note">{t('map.threshold.area', { area: number(threshold.areas.water_sqm / 1e6, 2) })}</p>
       {:else if workspace.map.layers.uncertainty && uncertainty}
         <span class="section-label"><Crosshair size={12} /> {t('map.layer.uncertainty')}</span>
         <div class="legend-ramp">
@@ -547,6 +579,14 @@
           <i class="ramp-bar" style:background={`linear-gradient(to ${workspace.locale.current === 'fa' ? 'left' : 'right'}, ${UNCERTAINTY_RAMP.join(', ')})`}></i>
           <span class="mono ltr-numeric">{percent(uncertainty.max)}</span>
         </div>
+      {:else if workspace.map.layers.imagery && leftMode.startsWith('nd:')}
+        <span class="section-label">{t('map.ndPreview')}</span>
+        <div class="legend-ramp">
+          <span class="mono ltr-numeric">−1</span>
+          <i class="ramp-bar" style:background={ndRamp.gradient}></i>
+          <span class="mono ltr-numeric">+1</span>
+        </div>
+        <p class="legend-note">{t(ndRamp.water ? 'map.nd.water' : 'map.nd.vegetation')}</p>
       {/if}
       {#if hard && hard.stale}
         <p class="legend-note">{t('map.stale')}</p>

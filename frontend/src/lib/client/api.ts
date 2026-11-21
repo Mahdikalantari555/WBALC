@@ -24,6 +24,7 @@ import type {
   FusionView,
   TemporalComparisonView,
   TemporalSeriesView,
+  WaterThresholdView,
   ProtocolView,
   EvaluationResultView,
   ReferenceAreaView,
@@ -263,6 +264,20 @@ export const api = {
 
   sceneAnalyses: (id: string, sceneId: string) =>
     request<SceneAnalysisView[]>(`/api/projects/${enc(id)}/scenes/${enc(sceneId)}/analyses`),
+
+  /** Model-free per-scene water detection (Otsu threshold on the scene's grid). */
+  sceneWaterThreshold: (
+    id: string,
+    sceneId: string,
+    options: { index?: string } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (options.index) query.set('index', options.index);
+    const suffix = query.toString() ? `?${query}` : '';
+    return request<WaterThresholdView>(
+      `/api/projects/${enc(id)}/scenes/${enc(sceneId)}/water-threshold${suffix}`,
+    );
+  },
 
   /** Per-date class/water areas from each scene's latest analysis (native grids). */
   temporalSeries: (id: string) =>

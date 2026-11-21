@@ -195,6 +195,7 @@ function paint(
   ranges: [number, number][],
   width: number,
   height: number,
+  water = false,
 ): string {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -216,9 +217,12 @@ function paint(
       if (n + r === 0) continue;
       const ndvi = (n - r) / (n + r);
       const v = Math.max(0, Math.min(1, (ndvi + 1) / 2));
-      pixels.data[base] = Math.round(225 * (1 - v) + 25 * v);
-      pixels.data[base + 1] = Math.round(115 * (1 - v) + 175 * v);
-      pixels.data[base + 2] = Math.round(80 * (1 - v) + 72 * v);
+      // High values read as vegetation (green ramp) or water (blue ramp) —
+      // the ramp follows the semantic of the index, not the user's choice.
+      const [lowC, highC] = water ? WATER_RAMP : VEGETATION_RAMP;
+      pixels.data[base] = Math.round(lowC[0] * (1 - v) + highC[0] * v);
+      pixels.data[base + 1] = Math.round(lowC[1] * (1 - v) + highC[1] * v);
+      pixels.data[base + 2] = Math.round(lowC[2] * (1 - v) + highC[2] * v);
     } else {
       channels.forEach((channel, c) => {
         const at = index(channel);
@@ -232,6 +236,24 @@ function paint(
   }
   ctx.putImageData(pixels, 0, 0);
   return canvas.toDataURL('image/png');
+}
+
+/** Land → green vegetation ramp for the generic normalized-difference views. */
+const VEGETATION_RAMP: [number, number, number][] = [[225, 115, 80], [25, 175, 72]];
+/** Land → open-water ramp for green-based indices (NDWI, MNDWI). */
+const WATER_RAMP: [number, number, number][] = [[225, 115, 80], [25, 110, 175]];
+
+/**
+ * Water indices put green first: (green − nir) / (green + nir) and its SWIR
+ * variant. Any other pair keeps the vegetation ramp.
+ */
+function isWaterDifference(mode: BandMode, names?: string[] | null): boolean {
+  if (!mode.startsWith('nd:') || !names?.length) return false;
+  const [, first, second] = mode.split(':').map(Number);
+  const normalized = names.map(name => (name ?? '').trim().toLowerCase());
+  const at = (i: number) => normalized[i] ?? '';
+  const highIsWater = ['nir08', 'nir_08', 'b08', 'b8', 'swir16', 'swir_16', 'b11', 'swir22', 'swir_22', 'b12'];
+  return at(first) === 'green' && highIsWater.includes(at(second));
 }
 
 async function backendPreview(
@@ -314,7 +336,7 @@ export async function renderRaster(
     const ranges = unique.map((band) => stretch.get(band) ?? ([0, 255] as [number, number]));
     const raster = await image.readRasters({ samples: unique, width, height, interleave: false });
     const arrays = unique.map((_, i) => raster[i] as ArrayLike<number>);
-    return paint(image, arrays, unique, channels, red, nir, difference, ranges, width, height);
+    return paint(image, arrays, unique, channels, red, nir, difference, ranges, width, height, isWaterDifference(mode, names));
   } catch (error) {
     forgetRaster(datasetId);
     try {
@@ -378,4 +400,40 @@ export async function renderWindow(
       throw new Error(`${describe(error)}. ${describe(fallbackError)}`);
     }
   }
+}
+
+/**
+ * Binary water mask → transparent PNG data URL (blue where water). The grid is
+ * the scene's own pixel grid, so the overlay aligns with the imagery exactly.
+ */
+export function renderWaterOverlay(values: (number | null)[][], color = 'rgb(30, 120, 200)'): string {
+  const height = values.length;
+  const width = height ? values[0].length : 0;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas rendering is unavailable in this browser.');
+  const pixels = ctx.createImageData(width, height);
+  const [r, g, b] = color.match(/\d+/g)?.map(Number) ?? [30, 120, 200];
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < width; col++) {
+      if (values[row]?.[col] !== 1) continue;
+      const base = (row * width + col) * 4;
+      pixels.data[base] = r;
+      pixels.data[base + 1] = g;
+      pixels.data[base + 2] = b;
+      pixels.data[base + 3] = 255;
+    }
+  }
+  ctx.putImageData(pixels, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+/** CSS gradient for the active normalized-difference legend. */
+export function waterIndexRamp(mode: BandMode, names?: string[] | null): { water: boolean; gradient: string } {
+  const water = isWaterDifference(mode, names);
+  const ramp = water ? WATER_RAMP : VEGETATION_RAMP;
+  const gradient = `linear-gradient(to right, rgb(${ramp[0].join(',')}), rgb(${ramp[1].join(',')}))`;
+  return { water, gradient };
 }

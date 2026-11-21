@@ -8,15 +8,76 @@
   import { classColor } from '../palette';
   import { getWorkspace, type MapLayer, type Selection } from '../state.svelte';
   import { useT } from '../t.svelte';
-  import type { DatasetView, MapFieldView, SceneView } from '../types';
+  import type { DatasetView, MapFieldView, SceneView, WaterThresholdView } from '../types';
   import { sameNativeGrid } from '../map-inspection';
   import { assessGeoreferencing } from '../geo';
+  import { NEAR_DAYS, epochLabel, groupEpochs, primaryScene } from '../epochs';
 
   const workspace = getWorkspace();
   const { t, integer, percent, number, date } = useT();
 
   const scene = $derived(workspace.scenes.find(candidate => workspace.mapScene?.projectId === workspace.project?.id && candidate.id === workspace.mapScene?.id) ??
     (!workspace.dataset ? workspace.scenes[0] : undefined));
+
+  /* ------------------------------------------------ near-date epoch grouping */
+
+  const epochs = $derived(groupEpochs(workspace.scenes));
+  const activeEpoch = $derived(epochs.findIndex(group => scene && group.some(candidate => candidate.id === scene.id)));
+
+  function gotoEpoch(index: number) {
+    const group = epochs[index];
+    if (!group || !workspace.project) return;
+    const primary = primaryScene(group, scene?.id);
+    const sibling = group.find(candidate => candidate.id !== primary.id && sameNativeGrid(primary, candidate));
+    compareId = sibling?.id ?? '';
+    workspace.mapScene = { projectId: workspace.project.id, id: primary.id };
+    workspace.map.bandMode = 'true-color';
+    workspace.map.layers.imagery = true;
+    workspace.map.selected = null;
+    workspace.notify(t('map.epoch.selected', { label: epochLabel(group) }));
+  }
+
+  function epochSummary(group: SceneView[]): string {
+    const sensors = [...new Set(group.map(candidate => candidate.sensor))].join(', ');
+    return `${epochLabel(group)} · ${t('map.epoch.nScenes', { count: group.length })} · ${sensors}`;
+  }
+
+  /* ------------------------------------------------- threshold water layer */
+
+  let thresholdField = $state<WaterThresholdView | null>(null);
+  let thresholdSceneId = $state<string | null>(null);
+  let thresholdLoading = $state(false);
+  let thresholdError = $state<string | null>(null);
+
+  async function loadThreshold() {
+    const target = scene?.id;
+    if (!target || !workspace.project || thresholdLoading) return;
+    if (thresholdSceneId === target && thresholdField) return;
+    thresholdLoading = true;
+    thresholdError = null;
+    try {
+      thresholdField = await api.sceneWaterThreshold(workspace.project.id, target);
+      thresholdSceneId = target;
+    } catch (error) {
+      thresholdField = null;
+      thresholdSceneId = null;
+      thresholdError = error instanceof Error ? error.message : String(error);
+    } finally {
+      thresholdLoading = false;
+    }
+  }
+  // A different scene invalidates the cached threshold product.
+  $effect(() => {
+    const id = scene?.id ?? null;
+    if (thresholdSceneId !== id) {
+      thresholdField = null;
+      thresholdSceneId = null;
+      thresholdError = null;
+      if (id && workspace.map.layers.threshold) void loadThreshold();
+    }
+  });
+  const thresholdShown = $derived(workspace.map.layers.threshold && scene ? thresholdField : null);
+
   function sceneRaster(scene: SceneView): DatasetView {
     const geo = assessGeoreferencing({ crsCode: scene.crs, transform: scene.transform, width: scene.width, height: scene.height });
     return {
@@ -47,6 +108,11 @@
 
   const layers = $derived([
     { id: 'imagery' as const, title: t('map.layer.imagery'), note: t('map.layer.imageryNote'), icon: Scan },
+    // Model-free water detection is meaningful before any training exists, so
+    // it is offered exactly where models are not: on scene views.
+    ...(scene
+      ? [{ id: 'threshold' as const, title: t('map.layer.threshold'), note: t('map.layer.thresholdNote'), icon: Droplets }]
+      : []),
     { id: 'classification' as const, title: t('map.layer.classification'), note: t('map.layer.classificationNote'), icon: Layers },
     // Only offered when the run actually recorded a water interpretation: a toggle
     // that always fails is worse than no toggle.
@@ -95,6 +161,7 @@
     ) {
       void workspace.loadMapField();
     }
+    if (layer === 'threshold' && next && scene) void loadThreshold();
     if (!next && layer === 'samples' && selected?.kind === 'sample') workspace.map.selected = null;
   }
 
@@ -158,8 +225,7 @@
 </PageHeading>
 
 {#if workspace.scenes.length}
-  <label class="field raster-source">{t('layer.source')}
-    <select class="select" value={scene?.id ?? ''} onchange={(event) => {
+  <label class="field raster-source">{t('layer.source')}    <select class="select" value={scene?.id ?? ''} onchange={(event) => {
       compareId = '';
       workspace.mapScene = event.currentTarget.value && workspace.project ? { projectId: workspace.project.id, id: event.currentTarget.value } : null;
       workspace.map.bandMode = 'true-color';
@@ -175,6 +241,29 @@
       {/each}
     </select>
   </label>
+{/if}
+
+{#if epochs.length > 1}
+  <div class="surface epoch-panel">
+    <div class="epoch-head">
+      <label for="epoch-range">{t('map.dateSlider')}</label>
+      <small>{t('map.epoch.count', { count: epochs.length, days: NEAR_DAYS })}</small>
+    </div>
+    <input
+      id="epoch-range"
+      class="epoch-range"
+      type="range"
+      min="0"
+      max={epochs.length - 1}
+      value={activeEpoch < 0 ? 0 : activeEpoch}
+      aria-label={t('map.dateSlider')}
+      oninput={(event) => gotoEpoch(Number(event.currentTarget.value))}
+    />
+    <div class="epoch-scale" dir="ltr">
+      <span class="mono">{epochSummary(epochs[0])}</span>
+      <span class="mono">{epochSummary(epochs[epochs.length - 1])}</span>
+    </div>
+  </div>
 {/if}
 
 {#if scene}
@@ -197,7 +286,7 @@
   <div class="map-workspace">
     <div class="stack">
       {#key dataset.id}
-        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} labels={scene ? [] : workspace.labels} onselect={select} />
+        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} threshold={thresholdShown} labels={scene ? [] : workspace.labels} onselect={select} />
         <RasterLayers {dataset} imageryOnly={Boolean(scene)} />
       {/key}
 
@@ -230,7 +319,7 @@
           <div class="panel-heading-title"><Layers size={16} strokeWidth={1.75} /><h2 id="layer-heading">{t('map.layers')}</h2></div>
           <span class="visible-count mono">{t('map.visible', { count: scene ? Number(workspace.map.layers.imagery) : visible })}</span>
         </div>
-        {#each (scene ? layers.filter(layer => layer.id === 'imagery') : layers) as layer (layer.id)}
+        {#each (scene ? layers.filter(layer => layer.id === 'imagery' || layer.id === 'threshold') : layers) as layer (layer.id)}
           <div class="layer-row-group" class:is-off={!workspace.map.layers[layer.id]}>
             <div class="layer-row">
               <span class="layer-icon"><layer.icon size={15} strokeWidth={1.7} /></span>
@@ -259,6 +348,19 @@
                   disabled={!workspace.map.layers[layer.id]}
                   style:--fill={`${workspace.map.opacity}%`}
                 />
+              </div>
+            {/if}
+            {#if layer.id === 'threshold'}
+              <div class="layer-opacity">
+                {#if thresholdLoading}
+                  <small role="status">{t('common.loading')}</small>
+                {:else if thresholdError}
+                  <small class="threshold-error" role="alert">{thresholdError}</small>
+                {:else if thresholdShown}
+                  <small class="mono ltr-numeric">
+                    {t('map.threshold.method', { index: thresholdShown.index.toUpperCase(), method: thresholdShown.method, threshold: number(thresholdShown.threshold, 4) })}
+                  </small>
+                {/if}
               </div>
             {/if}
             {#if layer.id === 'uncertainty'}
@@ -538,4 +640,14 @@
   @media (max-width: 590px) {
     .map-sidebar { grid-template-columns: minmax(0, 1fr); }
   }
+
+  /* Near-date epoch slider */
+  .epoch-panel { padding: 12px 14px; display: grid; gap: 8px; }
+  .epoch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .epoch-head label { font-size: 13px; font-weight: 650; }
+  .epoch-head small { color: var(--muted); }
+  .epoch-range { width: 100%; accent-color: var(--accent); }
+  .epoch-scale { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--muted); }
+  .epoch-scale span { overflow-wrap: anywhere; }
+  .threshold-error { color: var(--danger, #e5484d); overflow-wrap: anywhere; }
 </style>

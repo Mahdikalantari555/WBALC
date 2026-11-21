@@ -364,6 +364,25 @@ export interface LabelImportResult {
   errors: string[];
 }
 
+/** Model-free per-scene water detection (Otsu threshold on one index). */
+export interface WaterThresholdView {
+  sceneId: string;
+  sensor: string | null;
+  index: string;
+  bands: string[];
+  /** 'above' (spectral: water where value > threshold) or 'below' (SAR). */
+  direction: 'above' | 'below';
+  threshold: number;
+  method: string;
+  grid: { crs: string | null; transform: number[] | null; width: number; height: number };
+  classes: string[];
+  values: (number | null)[][];
+  valid: boolean[][];
+  counts: { valid: number; water: number; non_water: number; total: number };
+  areas: { pixel_sqm: number; valid_sqm: number; water_sqm: number };
+  studyArea: string;
+}
+
 export interface AdapterErrorShape {
   message: string;
   status: number;
