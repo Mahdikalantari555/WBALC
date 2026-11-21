@@ -307,48 +307,6 @@ def _cell_windows(grid: PatchGrid, rows: int, cols: int):
             yield r, c, y0, grid.xs[c], h, grid.patch_w
 
 
-def export_som_geotiff(
-    path: str | Path,
-    cluster_map: np.ndarray,
-    cluster_labels: list[str],
-    colors: list[tuple[int, int, int]],
-    crs: str | None,
-    transform: Affine,
-    grid: dict | None = None,
-    resolution: str = "pixel",
-) -> None:
-    """Write an unsupervised SOM classification GeoTIFF with embedded colormap."""
-
-    def _write(tmp: Path) -> None:
-        with rasterio.open(
-            tmp,
-            "w",
-            driver="GTiff",
-            height=cluster_map.shape[0],
-            width=cluster_map.shape[1],
-            count=1,
-            dtype="uint16",
-            crs=crs,
-            transform=transform,
-            nodata=NODATA,
-            compress="deflate",
-        ) as dst:
-            dst.write(cluster_map.astype(np.uint16), 1)
-            dst.update_tags(
-                **_base_tags(cluster_labels, grid, resolution),
-                description=(
-                    "RSAL unsupervised SOM classification map "
-                    "(pixel value = 0-based cluster index)"
-                ),
-            )
-            dst.write_colormap(
-                1,
-                {i: (int(c[0]), int(c[1]), int(c[2]), 255) for i, c in enumerate(colors)},
-            )
-
-    _atomic_write(path, _write)
-
-
 def export_hard_geotiff(
     path: str | Path,
     hard: np.ndarray,
@@ -653,7 +611,7 @@ def rasterize_cells(
 ) -> np.ndarray:
     """Block-fill per-cell values onto the source grid (nearest neighbour).
 
-    Used by the SOM export and available to any caller that needs a cell map in
+    Used by the binary export and available to any caller that needs a cell map in
     the source grid's geometry. Never interpolates: a cell's value is copied
     verbatim over its window, so categorical data stays categorical.
     """

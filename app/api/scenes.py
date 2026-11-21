@@ -102,7 +102,8 @@ def _scene_out(scene: Scene, settings) -> SceneOut:
     }
     path = Path(scene.storage_path)
     try:
-        reference = str(path.relative_to(settings.storage_dir.resolve()))
+        # Forward slashes: the reference is an API value, not an OS path.
+        reference = path.relative_to(settings.storage_dir.resolve()).as_posix()
     except ValueError:
         reference = path.name
     for field in ("acquisition_datetime", "uploaded_at", "registered_at"):

@@ -14,9 +14,10 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { contrastRatio, parseColour, type Rgb } from './contrast';
 import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // src/lib/components/ui/ -> app root
-const ROOT = new URL('../../../../', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const SRC = join(ROOT, 'src');
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -32,7 +33,13 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-const files = walk(SRC).map((path) => ({ path, rel: relative(ROOT, path), text: readFileSync(path, 'utf8') }));
+const files = walk(SRC).map((path) => ({
+  path,
+  // Normalize to forward slashes: relative() emits OS separators and the
+  // guards below compare POSIX-style routes like 'src/index.css'.
+  rel: relative(ROOT, path).split('\\').join('/'),
+  text: readFileSync(path, 'utf8'),
+}));
 const uiFiles = files.filter((file) => file.rel.includes('components/ui/'));
 const viewFiles = files.filter((file) => !file.rel.includes('components/ui/'));
 const stylesheet = files.find((file) => file.rel === 'src/index.css')!;

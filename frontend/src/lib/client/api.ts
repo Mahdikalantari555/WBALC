@@ -133,13 +133,16 @@ export const api = {
   submitLabel: (
     id: string,
     body: {
-      sampleId: string;
+      /** Omit for manual pixel labels: the engine derives the sample identity. */
+      sampleId?: string;
       datasetId: string;
       className: string;
       col: number;
       row: number;
       iteration?: number;
       revise?: boolean;
+      /** Pool granularity the sample came from; defaults to 'patch'. */
+      sampleResolution?: 'patch' | 'pixel';
       queryBatchId?: string | null;
       queryItemId?: string | null;
     },

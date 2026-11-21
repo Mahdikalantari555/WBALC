@@ -21,6 +21,8 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     environment: 'node',
     environmentMatchGlobs: [['src/**/*.dom.test.ts', 'jsdom']],
+    // jsdom under vitest can miss localStorage; install a fallback before tests.
+    setupFiles: ['src/lib/test/local-storage.ts'],
     globals: false,
   },
 });

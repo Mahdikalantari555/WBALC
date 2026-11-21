@@ -91,7 +91,7 @@ def test_only_random_strategies_record_a_seed():
     assert resolve_seed("random", None, 42) == 42
     assert resolve_seed("random", 5, 42) == 5
     # A deterministic strategy must not claim a seed it never used.
-    for strategy in ("diversity", "uncertainty", "hybrid", "som"):
+    for strategy in ("diversity", "uncertainty", "hybrid"):
         assert resolve_seed(strategy, 5, 42) is None
 
 

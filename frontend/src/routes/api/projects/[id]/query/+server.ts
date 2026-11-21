@@ -4,7 +4,7 @@ import { fail, ok } from '$lib/server/http';
 import { rsalPost, type RsalQueryResponse } from '$lib/server/rsal';
 
 interface Body {
-  strategy?: 'uncertainty' | 'diversity' | 'hybrid' | 'som' | 'random';
+  strategy?: 'uncertainty' | 'diversity' | 'hybrid' | 'random';
   method?: 'least_confidence' | 'margin' | 'entropy';
   batchSize?: number;
   datasetId?: string | null;

@@ -479,8 +479,9 @@ def test_source_raster_is_byte_identical_after_predict_and_export(client, projec
     assert client.get(f"/projects/{pid}/download/probability").status_code == 200
     assert client.get(f"/projects/{pid}/download/uncertainty").status_code == 200
 
-    # Read the stored file straight from the engine's storage root.
-    stored = next(Path(settings.storage_dir).rglob("*.tif"))
+    # Read the stored upload straight from the engine's uploads tree — rglob
+    # over the whole storage root would also match engine-written exports.
+    stored = next((Path(settings.storage_dir) / "uploads").rglob("*.tif"))
     assert stored.read_bytes() == payload
 
 

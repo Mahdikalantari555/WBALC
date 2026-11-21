@@ -6,7 +6,6 @@ const TYPES = new Set([
   'hard',
   'probability',
   'uncertainty',
-  'som',
   // Derived from the three-class product, served as their own files.
   'binary',
   'binary_probability',

@@ -19,6 +19,7 @@
     threshold = null,
     labels,
     onselect,
+    onprobe = null,
   }: {
     dataset: DatasetView;
     comparison?: { raster: DatasetView; left: string; right: string } | null;
@@ -28,6 +29,9 @@
     threshold?: WaterThresholdView | null;
     labels: LabelView[];
     onselect: (feature: Selection) => void;
+    /** Reports the probed pixel on the active (left) raster; null when the
+     * probe clears, falls outside, or targets the comparison side. */
+    onprobe?: ((pixel: { col: number; row: number } | null) => void) | null;
   } = $props();
 
   const workspace = getWorkspace();
@@ -84,6 +88,13 @@
       .catch(() => { if (active) probeError = true; })
       .finally(() => { if (active) probeBusy = false; });
     return () => { active = false; };
+  });
+  $effect(() => {
+    // Manual-sample entry anchors on the probed pixel of the ACTIVE raster only:
+    // the comparison side and a cleared probe have no labelable dataset here.
+    const point = pixel;
+    if (!position || position.side === 'right' || !point) onprobe?.(null);
+    else onprobe?.({ col: point.col, row: point.row });
   });
 
   // Leaflet is imported lazily so the map library stays out of the first paint.

@@ -19,6 +19,7 @@ daemon and is recorded as unverified in the PR rather than implied by green test
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -113,7 +114,10 @@ def test_ports_are_configurable(compose):
 def test_launcher_scripts_are_executable_and_parse(script):
     path = ROOT / script
     assert path.is_file(), f"{script} is missing"
-    assert path.stat().st_mode & 0o111, f"{script} is not executable"
+    if os.name != "nt":
+        # NTFS does not surface the POSIX exec bit to os.stat; the bit is only
+        # assertable where the filesystem actually tracks it.
+        assert path.stat().st_mode & 0o111, f"{script} is not executable"
     result = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 

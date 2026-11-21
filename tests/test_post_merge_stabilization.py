@@ -257,7 +257,7 @@ class TestQueryIntegrity:
             ],
         )
         _train(client, pid)
-        for strategy in ("uncertainty", "diversity", "hybrid", "som"):
+        for strategy in ("uncertainty", "diversity", "hybrid"):
             resp = client.post(
                 f"/projects/{pid}/query",
                 json={"strategy": strategy, "batch_size": 12, "exclude_labeled": False, "dataset_id": ds["id"]},
@@ -268,7 +268,9 @@ class TestQueryIntegrity:
             # the nodata collar covers pixel columns 0..15 -> grid cols 0..1
             assert min(cols) >= 2, (strategy, cols)
 
-    def test_query_rejects_or_degrades_for_pixel_checkpoint(self, client, project):
+    def test_query_serves_or_degrades_for_pixel_checkpoint(self, client, project):
+        """A pixel checkpoint scores a pixel pool (unify-pixel spec); the
+        model-free strategy still degrades instead of borrowing the model."""
         pid = project["id"]
         ds = _upload(client, pid, _scene(64, 64))
         _labels(
@@ -284,10 +286,14 @@ class TestQueryIntegrity:
 
         for strategy in ("uncertainty", "hybrid"):
             resp = client.post(f"/projects/{pid}/query", json={"strategy": strategy, "batch_size": 4})
-            assert resp.status_code == 409, resp.text
-            assert "patch" in resp.json()["detail"].lower()
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            # The pool follows the checkpoint's resolution, not a patch grid.
+            assert body["pool"]["patch_size"] == 1
+            assert body["model_iteration"] is not None
+            assert body["notes"] and "pixel" in body["notes"][0]
 
-        for strategy in ("diversity", "som"):
+        for strategy in ("diversity",):
             resp = client.post(
                 f"/projects/{pid}/query", json={"strategy": strategy, "batch_size": 4, "exclude_labeled": False}
             )
@@ -296,85 +302,6 @@ class TestQueryIntegrity:
             assert body["model_iteration"] is None
             assert body["notes"] and "pixel" in body["notes"][0]
             assert all(s["prediction"] is None for s in body["samples"])
-
-
-class TestSomIntegrity:
-    """D5/D6/D13 — SOM must ignore nodata and incompatible models."""
-
-    def test_som_explorer_ignores_pixel_checkpoint_and_invalid_patches(self, client, project):
-        pid = project["id"]
-        ds = _upload(client, pid, _scene(64, 64, collar=16))
-        _labels(
-            client,
-            pid,
-            [
-                point_label(x, y, "water" if x < 40 else "vegetation", dataset_id=ds["id"], sample_resolution="pixel")
-                for y in range(4, 64, 8)
-                for x in range(20, 64, 4)
-            ],
-        )
-        _train(client, pid, resolution="pixel", params={"n_estimators": 5})
-
-        resp = client.get(f"/projects/{pid}/som", params={"dataset_id": ds["id"]})
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["model_iteration"] is None
-        assert body["model_note"] and "pixel" in body["model_note"]
-        assert body["total_patches"] == 64
-        assert body["valid_patches"] == 48
-        assert body["nodata_patches"] == 16
-        assert sum(sum(row) for row in body["hit_grid"]) == 48
-        sample_ids = [sid for cell in body["cells"] for sid in cell["sample_ids"]]
-        assert len(sample_ids) == 48 and len(set(sample_ids)) == 48
-        # grid cols 0..1 are the nodata collar
-        assert all("_r{}_c0".format(r) not in sample_ids for r in range(8))
-        assert all("_r{}_c1".format(r) not in sample_ids for r in range(8))
-
-    def test_som_pixel_mode_uses_all_band_validity(self, client, project):
-        pid = project["id"]
-        data = np.zeros((4, 32, 32), dtype=np.float32)
-        data[:, :, 16:] = np.array([80, 90, 30, 150], dtype=np.float32)[:, None, None]
-        data[0, 10, 20] = np.nan  # one band missing at one pixel
-        ds = _upload(
-            client, pid, _geotiff(data, from_origin(500000, 4649776, 10, 10), nodata=0.0)
-        )
-        resp = client.post(
-            f"/projects/{pid}/som/classify",
-            json={"dataset_id": ds["id"], "resolution": "pixel", "rows": 2, "cols": 2, "epochs": 5},
-        )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["total_valid"] == 16 * 32 - 1
-        assert body["nodata_count"] == 16 * 32 + 1
-        # the partially masked pixel is nodata in the export
-        got = client.get(f"/projects/{pid}/som/download", params={"dataset_id": ds["id"]})
-        with rasterio.open(io.BytesIO(got.content)) as out:
-            assert (out.height, out.width) == (32, 32)
-            assert out.read(1)[10, 20] == out.nodata
-
-    def test_som_patch_export_matches_source_grid(self, client, project):
-        pid = project["id"]
-        ds = _upload(client, pid, _scene(70, 70))
-        resp = client.post(
-            f"/projects/{pid}/som/classify",
-            json={
-                "dataset_id": ds["id"],
-                "resolution": "patch",
-                "rows": 2,
-                "cols": 2,
-                "epochs": 5,
-                "patch_size": 8,
-                "stride": 8,
-            },
-        )
-        assert resp.status_code == 200, resp.text
-        got = client.get(f"/projects/{pid}/som/download", params={"dataset_id": ds["id"]})
-        with rasterio.open(io.BytesIO(got.content)) as out:
-            assert (out.height, out.width) == (70, 70)
-            assert out.crs.to_string() == "EPSG:32631"
-            assert out.transform.a == pytest.approx(10.0)
-            assert out.bounds.right == pytest.approx(500000.0 + 700.0)
-            assert out.tags()["resolution"] == "patch-cells"
 
 
 class TestCheckpoints:

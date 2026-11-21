@@ -131,19 +131,6 @@ def test_scl_is_excluded_from_training_and_supervised_prediction_paths(client, p
     batch = client.get(f"{root}/queries/{query.json()['batch_id']}").json()
     assert batch["parameters"]["predictor_band_indices"] == [0, 1, 2]
 
-    som = client.get(f"{root}/som?dataset_id={dataset_id}&rows=4&cols=4&epochs=10")
-    assert som.status_code == 200, som.text
-    assert som.json()["bands"] == 3
-    assert som.json()["predictor_band_indices"] == [0, 1, 2]
-    assert som.json()["excluded_band_names"] == ["SCL_20m"]
-    assert len(som.json()["cells"][0]["band_means"]) == 3
-    unsupervised_som = client.post(
-        f"{root}/som/classify",
-        json={"dataset_id": dataset_id, "rows": 2, "cols": 2, "epochs": 5, "max_train_samples": 64},
-    )
-    assert unsupervised_som.status_code == 200, unsupervised_som.text
-    assert unsupervised_som.json()["predictor_band_indices"] == [0, 1, 2]
-
     scene = client.post(
         f"{root}/scenes",
         files={"file": ("scl-scene.tif", content, "image/tiff")},

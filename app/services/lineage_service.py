@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,10 @@ from typing import Any
 # Bumped when the manifest's own shape changes: a hash is only comparable
 # between manifests that were built the same way.
 MANIFEST_VERSION = "run-manifest-v1"
+
+# A machine-local path in any spelling — POSIX absolute, Windows absolute, or a
+# drive letter — leaks the sandbox and must not survive into a manifest.
+_MACHINE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/])")
 
 # Never part of a manifest, even if a caller hands us a dict containing them.
 _SECRET_MARKERS = (
@@ -89,7 +94,7 @@ def scrub(value: Any, *, storage_dir: str | Path | None = None) -> Any:
         return cleaned
     if isinstance(value, (list, tuple)):
         return [scrub(item, storage_dir=storage_dir) for item in value]
-    if isinstance(value, str) and value.startswith(os.sep):
+    if isinstance(value, str) and _MACHINE_PATH.match(value):
         return Path(value).name
     if isinstance(value, Path):
         return value.name

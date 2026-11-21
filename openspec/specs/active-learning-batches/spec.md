@@ -31,7 +31,7 @@ Every strategy MUST sample from the same declared pool of valid, eligible, unlab
 - **AND** the seed and pool size are persisted
 
 #### Scenario: Existing deterministic strategies
-- **WHEN** uncertainty, diversity, hybrid or SOM selection is run
+- **WHEN** uncertainty, diversity, hybrid or random selection is run
 - **THEN** it uses the same eligibility rules and records its method/model context
 
 ### Requirement: Annotation decisions are durable and auditable

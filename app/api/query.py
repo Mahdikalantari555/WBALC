@@ -24,7 +24,6 @@ from ..schemas import (
 from ..services.al_service import (
     kcenter_greedy,
     select_hybrid,
-    select_som,
     select_uncertainty,
     uncertainty_scores,
 )
@@ -99,7 +98,7 @@ async def query_batch(
     # is refused for model-scored strategies instead of misusing the model.
     # Model-free strategies (diversity, random) never score, but their pool
     # still follows the checkpoint so labels stay interchangeable across runs.
-    consumes_scores = payload.strategy in ("uncertainty", "hybrid", "som")
+    consumes_scores = payload.strategy in ("uncertainty", "hybrid")
     checkpoint_resolution = (
         checkpoint.get("resolution", "patch") if checkpoint is not None else None
     )
@@ -221,11 +220,7 @@ async def query_batch(
     )
     labeled_set = set(labeled_sids)
 
-    method_used = (
-        None
-        if payload.strategy == "diversity" or (payload.strategy == "som" and probs is None)
-        else payload.method
-    )
+    method_used = None if payload.strategy == "diversity" else payload.method
 
     # A patch with no valid source pixels has all-zero embeddings and would be
     # ranked as maximally uncertain, so it must never enter the candidate pool.
@@ -277,24 +272,6 @@ async def query_batch(
             picked = select_uncertainty(scores, payload.batch_size)
         elif payload.strategy == "diversity":
             picked = kcenter_greedy(X_c, payload.batch_size, seed_emb)
-        elif payload.strategy == "som":
-            try:
-                picked = select_som(
-                    X_c,
-                    payload.batch_size,
-                    seed_emb,
-                    scores,
-                    rows=payload.som_rows,
-                    cols=payload.som_cols,
-                    epochs=payload.som_epochs,
-                    random_state=settings.random_state,
-                    target_cell=payload.som_cell,
-                    full_embeddings=X,
-                    candidate_indices=cand,
-                    seed_indices=seed_idx,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
         else:  # hybrid
             picked = select_hybrid(
                 scores, X_c, payload.batch_size, payload.hybrid_pool_multiplier, seed_emb

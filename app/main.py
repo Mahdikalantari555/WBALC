@@ -19,7 +19,6 @@ from .api import (
     research_path,
     raster_stack,
     scenes,
-    som,
     temporal,
     training,
 )
@@ -66,7 +65,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(datasets.router)
     app.include_router(labels.router)
     app.include_router(query.router)
-    app.include_router(som.router)
     app.include_router(training.router)
     app.include_router(inference.router)
     app.include_router(lineage.router)

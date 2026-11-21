@@ -29,8 +29,7 @@ The browser talks to the engine through a same-origin server adapter.
 | Multi-temporal scene ingestion | `POST/GET /projects/{id}/scenes`, `GET /projects/{id}/scenes/{sid}`, `GET .../{sid}/spatial`, `DELETE .../{sid}` |
 | Legacy dataset ingestion | `POST /projects/{id}/upload` (GeoTIFF), `GET /projects/{id}/dataset`, `GET .../dataset/{did}/file`, `DELETE .../dataset/{did}` |
 | Label management | `POST/GET /projects/{id}/labels`, `GET /projects/{id}/history`, `DELETE /projects/{id}/labels/{sample_id}` |
-| Active learning query | `POST /projects/{id}/query` (uncertainty / diversity / hybrid / som) |
-| Unsupervised SOM | `POST /projects/{id}/som/classify` (pixel/patch spectral clustering + GeoTIFF), `GET/POST /projects/{id}/som` |
+| Active learning query | `POST /projects/{id}/query` (uncertainty / diversity / hybrid / random) |
 | Model training | `POST /projects/{id}/train` (rf / lightgbm), `GET /projects/{id}/metrics` |
 | Inference & export | `POST /projects/{id}/predict`, `GET /projects/{id}/download/{hard\|probability\|som}` |
 

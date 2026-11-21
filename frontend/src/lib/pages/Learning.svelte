@@ -246,6 +246,8 @@
         row: reviewed.center[1],
         iteration,
         revise,
+        // Record the pool granularity the sample actually came from.
+        sampleResolution: isPixelSample(reviewed.window) ? 'pixel' : 'patch',
         ...(batchId ? { queryBatchId: batchId, queryItemId: currentItem?.id } : {}),
       });
       if (workspace.project?.id !== projectId) return;

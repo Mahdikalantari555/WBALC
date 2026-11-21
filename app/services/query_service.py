@@ -21,7 +21,7 @@ import numpy as np
 STRATEGY_VERSION = "query-v1"
 
 # Pixel pools are subsampled to stay tractable: ~50k candidates keeps
-# kcenter/SOM responsive on large scenes without changing the ranking
+# kcenter responsive on large scenes without changing the ranking
 # semantics (every candidate is still one real, valid pixel).
 PIXEL_POOL_TARGET = 50_000
 PIXEL_POOL_MAX_STRIDE = 8

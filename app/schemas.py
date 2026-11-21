@@ -401,7 +401,7 @@ class LabelOut(BaseModel):
 
 # ---------------------------------------------------------------- query
 class QueryRequest(BaseModel):
-    strategy: Literal["uncertainty", "diversity", "hybrid", "som", "random"] = "uncertainty"
+    strategy: Literal["uncertainty", "diversity", "hybrid", "random"] = "uncertainty"
     batch_size: int = Field(default=10, ge=1, le=10000)
     method: Literal["least_confidence", "margin", "entropy"] = "least_confidence"
     dataset_id: int | None = None
@@ -413,10 +413,6 @@ class QueryRequest(BaseModel):
     sample_resolution: Literal["patch", "pixel"] | None = None
     patch_size: int | None = Field(default=None, ge=2, le=512)
     stride: int | None = Field(default=None, ge=1, le=512)
-    som_rows: int | None = Field(default=None, ge=2, le=32)
-    som_cols: int | None = Field(default=None, ge=2, le=32)
-    som_epochs: int = Field(default=50, ge=5, le=500)
-    som_cell: tuple[int, int] | None = None
     # Seeded baseline. Only used by strategy='random'; the seed is always
     # recorded, and the default is the engine's configured random_state.
     seed: int | None = Field(default=None, ge=0)
@@ -802,122 +798,6 @@ class ExportOut(BaseModel):
     sha256: str | None = None
     size_bytes: int | None = None
     integrity: str | None = None
-
-
-# ---------------------------------------------------------------- self-organizing map
-class SomRequest(BaseModel):
-    dataset_id: int | None = None
-    rows: int | None = Field(default=None, ge=2, le=32)
-    cols: int | None = Field(default=None, ge=2, le=32)
-    epochs: int = Field(default=50, ge=5, le=500)
-    sigma: float | None = Field(default=None, gt=0.0, le=32.0)
-    learning_rate: float = Field(default=0.7, gt=0.0, le=1.0)
-    patch_size: int | None = Field(default=None, ge=2, le=512)
-    stride: int | None = Field(default=None, ge=1, le=512)
-
-
-class SomCell(BaseModel):
-    row: int
-    col: int
-    hit_count: int
-    labeled_count: int
-    unlabeled_count: int
-    u_value: float
-    quantization_error: float
-    dominant_label: str | None = None
-    label_counts: dict[str, int] = Field(default_factory=dict)
-    predicted_class: str | None = None
-    prediction_counts: dict[str, int] = Field(default_factory=dict)
-    mean_confidence: float | None = None
-    mean_uncertainty: float | None = None
-    band_means: list[float]
-    band_profile: list[float]
-    representative_sample_id: str | None = None
-    sample_ids: list[str] = Field(default_factory=list)
-
-
-class SomResponse(BaseModel):
-    project_id: int
-    dataset_id: int
-    rows: int
-    cols: int
-    epochs: int
-    total_patches: int
-    # Patches with at least one valid source pixel; the rest are nodata and are
-    # excluded from the fit, the hit grid and every cell's sample list.
-    valid_patches: int = 0
-    nodata_patches: int = 0
-    labeled_patches: int
-    active_neurons: int
-    quantization_error: float
-    topographic_error: float
-    model_iteration: int | None = None
-    # Why supervised annotations are absent, when a checkpoint exists but cannot
-    # annotate patch cells (band-count or resolution mismatch).
-    model_note: str | None = None
-    bands: int
-    predictor_band_indices: list[int] = Field(default_factory=list)
-    predictor_band_names: list[str] = Field(default_factory=list)
-    excluded_band_indices: list[int] = Field(default_factory=list)
-    excluded_band_names: list[str] = Field(default_factory=list)
-    classes: list[str]
-    u_matrix: list[list[float]]
-    hit_grid: list[list[int]]
-    cells: list[SomCell]
-
-
-class SomClassifyRequest(BaseModel):
-    dataset_id: int | None = None
-    rows: int = Field(default=4, ge=2, le=32)
-    cols: int = Field(default=4, ge=2, le=32)
-    n_clusters: int | None = Field(default=None, ge=2, le=256)
-    epochs: int = Field(default=50, ge=5, le=500)
-    sigma: float | None = Field(default=None, gt=0.0, le=32.0)
-    learning_rate: float = Field(default=0.7, gt=0.0, le=1.0)
-    resolution: Literal["pixel", "patch"] = "pixel"
-    region: Region | None = None
-    patch_size: int | None = Field(default=None, ge=2, le=512)
-    stride: int | None = Field(default=None, ge=1, le=512)
-    max_train_samples: int = Field(default=25000, ge=64, le=250000)
-    include_map: bool = True
-
-
-class SomClusterSummary(BaseModel):
-    cluster_id: int
-    label: str
-    color: list[int]
-    pixel_count: int
-    fraction: float
-    band_means: list[float]
-    band_profile: list[float]
-    neurons: list[list[int]]
-
-
-class SomClassifyResponse(BaseModel):
-    project_id: int
-    dataset_id: int
-    export_id: int
-    rows: int
-    cols: int
-    epochs: int
-    n_clusters: int
-    resolution: str
-    predictor_band_indices: list[int] = Field(default_factory=list)
-    predictor_band_names: list[str] = Field(default_factory=list)
-    excluded_band_indices: list[int] = Field(default_factory=list)
-    excluded_band_names: list[str] = Field(default_factory=list)
-    region: Region
-    shape: list[int]
-    total_valid: int
-    nodata_count: int
-    quantization_error: float
-    topographic_error: float
-    u_matrix: list[list[float]]
-    neuron_clusters: list[list[int]]
-    neuron_hits: list[list[int]]
-    clusters: list[SomClusterSummary]
-    cluster_map: list[list[int]] | None = None
-    exports: dict[str, str]
 
 
 # ---------------------------------------- scene classification / temporal (Phase 4)

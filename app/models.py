@@ -476,7 +476,7 @@ class Export(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     dataset_id: Mapped[int] = mapped_column(Integer)
     training_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    type: Mapped[str] = mapped_column(String(20))  # hard | probability | som
+    type: Mapped[str] = mapped_column(String(20))  # hard | probability
     path: Mapped[str] = mapped_column(String(1024))
     region: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Checksum recorded right after the atomic write; downloads verify it.

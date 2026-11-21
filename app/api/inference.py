@@ -71,7 +71,6 @@ EXPORT_TYPES = {
     "probability": "probability",
     "prob": "probability",
     "uncertainty": "uncertainty",
-    "som": "som",
     # Derived from the three-class product, never a replacement for it.
     "binary": "binary",
     "binary_probability": "binary_probability",
@@ -735,7 +734,7 @@ async def download(
             status_code=404,
             detail=(
                 f"Unknown export type '{export_type}'; use hard, probability, "
-                "uncertainty, binary, binary_probability or som"
+                "uncertainty, binary or binary_probability"
             ),
         )
     etype = EXPORT_TYPES[export_type]
@@ -747,38 +746,29 @@ async def download(
     stale = bool(
         export is not None
         and latest is not None
-        and etype != "som"
         and export.training_run_id != latest.id
     )
 
     if export is None or stale:
         dataset = await require_dataset(session, project_id, dataset_id)
-        if etype == "som":
-            from ..schemas import SomClassifyRequest
-            from .som import run_som_classification
-
-            export, _, _ = await run_som_classification(
-                session, settings, project, dataset, SomClassifyRequest(dataset_id=dataset.id)
-            )
-        else:
-            # A newer run exists than the artifact on disk: re-running inference
-            # is the only way to hand back the model the user just trained.
-            # `_latest_export` filters by method so uncertainty artifacts of a
-            # different method are never substituted.
-            await _run_inference(
-                session,
-                settings,
-                project,
-                dataset,
-                None,
-                None,
-                method,
-                accept_unverified_schema=accept_unverified_schema,
-            )
-            export = await _latest_export(session, project_id, etype, dataset.id, method)
-            if export is None:
-                raise HTTPException(status_code=500, detail="Export failed")
-            stale = False
+        # A newer run exists than the artifact on disk: re-running inference
+        # is the only way to hand back the model the user just trained.
+        # `_latest_export` filters by method so uncertainty artifacts of a
+        # different method are never substituted.
+        await _run_inference(
+            session,
+            settings,
+            project,
+            dataset,
+            None,
+            None,
+            method,
+            accept_unverified_schema=accept_unverified_schema,
+        )
+        export = await _latest_export(session, project_id, etype, dataset.id, method)
+        if export is None:
+            raise HTTPException(status_code=500, detail="Export failed")
+        stale = False
 
     suffix = f"_{method}" if etype == "uncertainty" else ""
     iteration = None

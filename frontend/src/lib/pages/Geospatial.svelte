@@ -4,7 +4,7 @@
   import InteractiveMap from '../components/InteractiveMap.svelte';
   import RasterLayers from '../components/RasterLayers.svelte';
   import PageHeading from '../components/PageHeading.svelte';
-  import { api } from '../client/api';
+  import { api, ClientError } from '../client/api';
   import { classColor } from '../palette';
   import { getWorkspace, type MapLayer, type Selection } from '../state.svelte';
   import { useT } from '../t.svelte';
@@ -218,6 +218,69 @@
     workspace.map.selected = feature;
   }
 
+  /* ------------------------------------------------ manual sample entry */
+  let probedPixel = $state<{ col: number; row: number } | null>(null);
+  let manualClass = $state('');
+  let manualBusy = $state(false);
+  let manualError = $state<string | null>(null);
+  /**
+   * A probed pixel of the active raster is labelable when the raster is a
+   * registered dataset row: synthetic scene views have no dataset to attach
+   * the label to, so the form is replaced by an explanation there.
+   */
+  const manualTarget = $derived(
+    probedPixel && dataset && !dataset.id.startsWith('scene:')
+      ? { dataset, pixel: probedPixel }
+      : null,
+  );
+  /** A manual label already sitting on this exact pixel (same dataset, same point). */
+  const existingManual = $derived.by(() => {
+    if (!manualTarget) return null;
+    const { dataset: target, pixel: point } = manualTarget;
+    return (
+      workspace.labels.find(
+        (label) =>
+          label.datasetId === target.id &&
+          label.coordinateSpace === 'pixel' &&
+          Array.isArray(label.geometry.coordinates) &&
+          (label.geometry.coordinates as number[])[0] === point.col &&
+          (label.geometry.coordinates as number[])[1] === point.row,
+      ) ?? null
+    );
+  });
+
+  function probe(pixel: { col: number; row: number } | null) {
+    probedPixel = pixel;
+    manualError = null;
+  }
+
+  async function saveManualSample() {
+    if (!manualTarget || !manualClass || !workspace.project || manualBusy) return;
+    const projectId = workspace.project.id;
+    const { dataset: target, pixel: point } = manualTarget;
+    manualBusy = true;
+    manualError = null;
+    try {
+      // No sampleId: the engine derives a stable per-pixel identity, so
+      // relabeling the same pixel revises the same sample.
+      const saved = await api.submitLabel(projectId, {
+        datasetId: target.id,
+        className: manualClass,
+        col: point.col,
+        row: point.row,
+        iteration: workspace.latestRun?.iteration ?? 0,
+        sampleResolution: 'pixel',
+      });
+      workspace.notify(t('map.manualSample.saved', { id: saved.sampleId }));
+      manualClass = '';
+      void workspace.reload();
+    } catch (error) {
+      manualError = error instanceof ClientError ? error.message : String(error);
+    } finally {
+      manualBusy = false;
+    }
+  }
+
   const exportReason = $derived(!dataset ? 'ux.exportData' : scene ? 'ux.exportScene' : !workspace.latestRun ? 'ux.exportTrain' :
     !(workspace.map.layers.classification || workspace.map.layers.uncertainty || workspace.map.layers.binary) ? 'ux.exportLayer' : null);
 
@@ -333,7 +396,7 @@
   <div class="map-workspace">
     <div class="stack">
       {#key dataset.id}
-        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} threshold={thresholdShown} labels={activeLabels} onselect={select} />
+        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} threshold={thresholdShown} labels={activeLabels} onselect={select} onprobe={probe} />
         <RasterLayers {dataset} imageryOnly={Boolean(scene)} />
       {/key}
 
@@ -498,6 +561,43 @@
               </div>
               <div><dt>{t('common.model')}</dt><dd>#{hard?.iteration ?? '—'}</dd></div>
             </dl>
+          </div>
+        {:else if manualTarget}
+          <div class="panel-body feature-body manual-sample">
+            <div class="feature-name">
+              <div class="feature-icon sample"><MapPin size={18} /></div>
+              <div>
+                <strong>{t('map.manualSample.title')}</strong>
+                <small class="ltr-numeric">r{manualTarget.pixel.row} · c{manualTarget.pixel.col} — {manualTarget.dataset.name}</small>
+              </div>
+            </div>
+            <p class="manual-hint">{t('map.manualSample.hint')}</p>
+            {#if existingManual}
+              <p class="manual-existing">{t('map.manualSample.existing', { className: existingManual.className })}</p>
+            {/if}
+            <div class="class-picker" role="radiogroup" aria-label={t('map.manualSample.class')}>
+              {#each workspace.project?.classes ?? [] as option (option)}
+                <button
+                  type="button"
+                  class="class-chip"
+                  class:active={manualClass === option}
+                  style:color={classColor(option, workspace.project?.classes.indexOf(option) ?? -1)}
+                  onclick={() => (manualClass = option)}
+                >{option}</button>
+              {/each}
+            </div>
+            {#if manualError}
+              <p class="manual-error" role="alert">{manualError}</p>
+            {/if}
+            <div class="feature-action">
+              <button class="button small" disabled={!manualClass || manualBusy} onclick={saveManualSample}>
+                {manualBusy ? t('map.manualSample.saving') : t('map.manualSample.submit')}
+              </button>
+            </div>
+          </div>
+        {:else if probedPixel}
+          <div class="panel-body feature-body">
+            <EmptyState title={t('map.manualSample.title')} hint={t('map.manualSample.needDataset')} />
           </div>
         {:else}
           <EmptyState title={t('map.noSelection')} hint={t('map.noSelectionHint')} />
@@ -693,6 +793,20 @@
   .feature-body .kv-list > div { padding-block: 7px; }
   .feature-body .kv-list dd { font-size: 11px; }
   .feature-action { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 10px; }
+  .manual-hint { margin: 0 0 8px; font-size: 11px; color: var(--faint); }
+  .manual-existing { margin: 0 0 8px; font-size: 11px; color: var(--warn); }
+  .manual-error { margin: 0 0 8px; font-size: 11px; color: var(--danger-fg); overflow-wrap: anywhere; }
+  .class-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .class-chip {
+    padding: 4px 11px;
+    border-radius: 999px;
+    border: 1px solid var(--control-border);
+    background: var(--control-bg);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .class-chip.active { border-color: var(--accent); background: color-mix(in oklab, var(--accent) 18%, transparent); }
   .hint-box { display: grid; gap: 4px; }
   .hint-box strong { font-size: 12.5px; }
   .hint-box p { margin: 0; color: var(--faint); font-size: 11.5px; }
@@ -715,5 +829,5 @@
   .epoch-range { width: 100%; accent-color: var(--accent); }
   .epoch-scale { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--muted); }
   .epoch-scale span { overflow-wrap: anywhere; }
-  .threshold-error { color: var(--danger, #e5484d); overflow-wrap: anywhere; }
+  .threshold-error { color: var(--danger); overflow-wrap: anywhere; }
 </style>

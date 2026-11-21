@@ -95,18 +95,14 @@ def main() -> int:
     hist = check(c.get(f"/projects/{pid}/history"), 200)
     print(f"  history now has {len(hist)} label versions")
 
-    print("\n== 6. uncertainty, hybrid & SOM queries ==")
-    for strategy in ("uncertainty", "hybrid", "som"):
+    print("\n== 6. uncertainty & hybrid queries ==")
+    for strategy in ("uncertainty", "hybrid"):
         q = check(c.post(f"/projects/{pid}/query", json={
             "strategy": strategy, "batch_size": 5, "method": "entropy", "exclude_labeled": False,
         }), 200)
         top = q["samples"][0]
         print(f"  {strategy}: {q['batch_size']} samples; top uncertainty={top['uncertainty']:.3f} "
               f"pred={top['prediction']} conf={top['confidence']:.3f}")
-
-    som_info = check(c.get(f"/projects/{pid}/som"), 200)
-    print(f"  SOM grid={som_info['rows']}x{som_info['cols']} active={som_info['active_neurons']} "
-          f"qe={som_info['quantization_error']:.3f} te={som_info['topographic_error']:.3f}")
 
     print("\n== 7. LightGBM training + metrics ==")
     t2 = check(c.post(f"/projects/{pid}/train", json={

@@ -9,8 +9,9 @@ describe('contextWindow', () => {
   it('expands a 1×1 pixel window into a ±32 px context window', () => {
     const window = { x0: 100, y0: 200, x1: 101, y1: 201 };
     const expanded = contextWindow(window, width, height);
-    expect(expanded.x1 - expanded.x0).toBe(64);
-    expect(expanded.y1 - expanded.y0).toBe(64);
+    // A ±32 px radius around the pixel spans 65 px: 32 + the pixel + 32.
+    expect(expanded.x1 - expanded.x0).toBe(65);
+    expect(expanded.y1 - expanded.y0).toBe(65);
     // The target pixel stays the centre of the context window.
     expect((expanded.x0 + expanded.x1) / 2).toBeCloseTo(100.5);
     expect((expanded.y0 + expanded.y1) / 2).toBeCloseTo(200.5);
@@ -26,8 +27,9 @@ describe('contextWindow', () => {
     const expanded = contextWindow(corner, width, height);
     expect(expanded.x0).toBe(0);
     expect(expanded.y0).toBe(0);
-    expect(expanded.x1).toBe(32);
-    expect(expanded.y1).toBe(32);
+    // Clamped to the edge but still a 33 px context from the border pixel.
+    expect(expanded.x1).toBe(33);
+    expect(expanded.y1).toBe(33);
     const farEdge = contextWindow({ x0: 876, y0: 460, x1: 877, y1: 461 }, width, height);
     expect(farEdge.x1).toBe(width);
     expect(farEdge.y1).toBe(height);

@@ -84,7 +84,8 @@ latest checkpoint's resolution unless the request overrides it.**
 - Patch pool: unchanged (`patch_features`, `patch_validity`).
 - Scoring: pixel checkpoints predict on raw pixel vectors (width = bands),
   patch checkpoints on patch statistics (width = 4·bands); `uncertainty_scores`,
-  `kcenter_greedy`, `select_hybrid`, `select_som` are granularity-agnostic.
+  `kcenter_greedy`, `select_hybrid` are granularity-agnostic. (SOM was removed
+  from the product: it belonged to the legacy RSAL tool.)
 - The 409 branch is deleted; the note instead states the granularity used and
   whether model scores were applied.
 - Labels: `resolve_label_patches` maps points onto any grid via
