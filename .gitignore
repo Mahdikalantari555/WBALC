@@ -27,3 +27,4 @@ project-test/
 # Local visual QA captures (never commit screenshots)
 .screenshots/
 docs/screenshots/*.png
+.audit/
