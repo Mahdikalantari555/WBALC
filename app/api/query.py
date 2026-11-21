@@ -31,6 +31,7 @@ from ..services.al_service import (
 from ..services.query_service import (
     STRATEGY_VERSION,
     describe_pool,
+    pixel_query_stride,
     resolve_seed,
     select_random,
 )
@@ -43,6 +44,7 @@ from ..services.raster_service import (
     make_grid,
     patch_features,
     patch_validity,
+    pixel_features,
     pixel_to_map,
     sample_id,
 )
@@ -63,12 +65,16 @@ router = APIRouter(prefix="/projects/{project_id}", tags=["active-learning"])
 async def query_batch(
     project_id: int, payload: QueryRequest, session: SessionDep, settings: SettingsDep
 ):
-    """Select the next batch of informative patches to label.
+    """Select the next batch of informative samples to label.
 
-    - uncertainty: requires a trained model; ranks by least-confidence,
-      margin or entropy.
-    - diversity: model-free core-set selection over patch embeddings
-      (works for cold start).
+    The candidate pool is a patch grid or a pixel grid — it follows the latest
+    checkpoint's resolution unless `sample_resolution` overrides it — and one
+    selection rule runs over that pool:
+
+    - uncertainty: requires a model at the pool's granularity; ranks by
+      least-confidence, margin or entropy on true per-candidate probabilities.
+    - diversity: model-free core-set selection over candidate spectra (works
+      for cold start).
     - hybrid: uncertainty pool + core-set diversification; requires a model.
     """
     project = await get_project(session, project_id)
@@ -81,37 +87,56 @@ async def query_batch(
     if run is not None:
         try:
             checkpoint = checkpoint_or_409(run)
-            if checkpoint.get("resolution") == "patch":
-                resolve_inference_contract(run, checkpoint, dataset, accept_unverified=False)
         except HTTPException as exc:
             if needs_model or exc.status_code != 409:
                 raise
             checkpoint = None
             notes.append(f"Selected without model scores: {exc.detail}")
 
-    # Queries are patch-grid operations: embeddings are per-band patch
-    # statistics, so only a patch-feature checkpoint can score them. A pixel
-    # checkpoint would otherwise reach predict_proba with the wrong width and
-    # surface as an opaque 500.
-    model_checkpoint = checkpoint
-    if checkpoint is not None and checkpoint.get("resolution") != "patch":
-        if payload.strategy in ("uncertainty", "hybrid"):
+    # Pool granularity follows the latest checkpoint's resolution — patch
+    # statistics or raw per-pixel spectra — unless the request overrides it.
+    # A checkpoint can only score a pool at its own resolution: the mismatch
+    # is refused for model-scored strategies instead of misusing the model.
+    # Model-free strategies (diversity, random) never score, but their pool
+    # still follows the checkpoint so labels stay interchangeable across runs.
+    consumes_scores = payload.strategy in ("uncertainty", "hybrid", "som")
+    checkpoint_resolution = (
+        checkpoint.get("resolution", "patch") if checkpoint is not None else None
+    )
+    granularity = payload.sample_resolution or checkpoint_resolution or "patch"
+    model_checkpoint = None
+    if checkpoint is not None:
+        if granularity == checkpoint_resolution:
+            if consumes_scores:
+                try:
+                    resolve_inference_contract(run, checkpoint, dataset, accept_unverified=False)
+                except HTTPException as exc:
+                    if needs_model or exc.status_code != 409:
+                        raise
+                    notes.append(f"Selected without model scores: {exc.detail}")
+                else:
+                    model_checkpoint = checkpoint
+            else:
+                notes.append(
+                    f"Strategy '{payload.strategy}' does not use model scores; pool "
+                    f"granularity follows the checkpoint ({checkpoint_resolution})."
+                )
+        elif payload.strategy in ("uncertainty", "hybrid"):
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"Latest model (iteration {run.iteration}) was trained at "
-                    f"{checkpoint.get('resolution')} resolution, but active-learning "
-                    "queries rank patch embeddings. Retrain with "
-                    '{"resolution": "patch"} to query with model scores, or use '
-                    "strategy='diversity'/'som' which do not need a model."
+                    f"{checkpoint_resolution} resolution, but a {granularity} pool was "
+                    "requested. Query at the checkpoint's resolution, or retrain with "
+                    f'{{"resolution": "{granularity}"}} to score {granularity} candidates.'
                 ),
             )
-        model_checkpoint = None
-        notes.append(
-            f"Latest model (iteration {run.iteration}) was trained at "
-            f"{checkpoint.get('resolution')} resolution, so it cannot score patch "
-            "embeddings; this batch was selected without model scores."
-        )
+        else:
+            notes.append(
+                f"Latest model (iteration {run.iteration}) was trained at "
+                f"{checkpoint_resolution} resolution, so it cannot score a "
+                f"{granularity} pool; this batch was selected without model scores."
+            )
 
     if model_checkpoint is None and payload.strategy in ("uncertainty", "hybrid"):
         raise HTTPException(
@@ -137,12 +162,17 @@ async def query_batch(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     predictor_band_indices = feature_selection["indices"]
 
-    patch_size = payload.patch_size or (
-        model_checkpoint["patch_size"] if model_checkpoint else settings.patch_size
-    )
-    stride = payload.stride or (
-        model_checkpoint["stride"] if model_checkpoint else settings.resolved_stride()
-    )
+    if granularity == "pixel":
+        patch_size, stride = 1, pixel_query_stride(
+            dataset.height, dataset.width, payload.stride
+        )
+    else:
+        patch_size = payload.patch_size or (
+            model_checkpoint["patch_size"] if model_checkpoint else settings.patch_size
+        )
+        stride = payload.stride or (
+            model_checkpoint["stride"] if model_checkpoint else settings.resolved_stride()
+        )
 
     prediction_classes = list(run.classes) if model_checkpoint is not None else []
 
@@ -154,8 +184,19 @@ async def query_batch(
             band_indexes=predictor_band_indices,
         )
         grid = make_grid(dataset.height, dataset.width, patch_size, stride)
-        X = patch_features(arr, grid)
-        valid = patch_validity(arr, grid)
+        if granularity == "pixel":
+            # One raw predictor vector per pool pixel: the feature family a
+            # pixel-resolution checkpoint was trained on (strict all-band
+            # validity, invalid pixels never enter the pool).
+            features_all, valid_all = pixel_features(arr)
+            selector = np.asarray(
+                [y * dataset.width + x for y in grid.ys for x in grid.xs], dtype=np.int64
+            )
+            X = features_all[selector]
+            valid = valid_all[selector]
+        else:
+            X = patch_features(arr, grid)
+            valid = patch_validity(arr, grid)
         probs = None
         if model_checkpoint is not None:
             model = model_checkpoint["model"]
@@ -206,6 +247,12 @@ async def query_batch(
         exclude_labeled=payload.exclude_labeled,
         n_labeled_patches=len(labeled_set),
         n_grid_cells=len(all_sids),
+    )
+    # The granularity is part of the batch's identity: pool.patch_size records
+    # it structurally (1 = pixel pool), and the note states it in prose.
+    notes.append(
+        f"Pool granularity: {granularity} (patch_size {patch_size}, stride {stride}, "
+        f"{len(candidate_sids)} candidates)"
     )
     seed = resolve_seed(payload.strategy, payload.seed, settings.random_state)
 

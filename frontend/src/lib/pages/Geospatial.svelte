@@ -78,16 +78,24 @@
   });
   const thresholdShown = $derived(workspace.map.layers.threshold && scene ? thresholdField : null);
 
-  function sceneRaster(scene: SceneView): DatasetView {
-    const geo = assessGeoreferencing({ crsCode: scene.crs, transform: scene.transform, width: scene.width, height: scene.height });
+  function sceneRaster(acquisition: SceneView): DatasetView {
+    // Prefer the real derived dataset row: it carries the identity (bands,
+    // schema, content hash) the model layers need. Legacy scenes without a
+    // link fall back to a synthetic view over the scene file endpoint.
+    const derived = acquisition.datasetId
+      ? workspace.datasets.find((item) => item.id === acquisition.datasetId)
+      : null;
+    if (derived) return derived;
+    const geo = assessGeoreferencing({ crsCode: acquisition.crs, transform: acquisition.transform, width: acquisition.width, height: acquisition.height });
     return {
-      id: `scene:${scene.id}`, projectId: scene.projectId, name: scene.sourceFilename,
-      url: `/api/projects/${encodeURIComponent(scene.projectId)}/scenes/${encodeURIComponent(scene.id)}/file`,
-      crs: scene.crs, transform: scene.transform, width: scene.width, height: scene.height, bands: scene.bandCount,
-      dtype: scene.bandDtypes?.join(', ') ?? '—', nodata: null, bounds: scene.bounds, sizeBytes: scene.sizeBytes,
-      contentSha256: null, createdAt: scene.registeredAt, georeferenced: geo.mode === 'map', georefReason: geo.reason,
-      bandNames: scene.bandNames?.map(name => name ?? '') ?? null, bandSchemaDeclared: Boolean(scene.bandNames?.every(Boolean)),
-      sensor: scene.sensor, patchGrid: null,
+      id: `scene:${acquisition.id}`, projectId: acquisition.projectId, name: acquisition.sourceFilename,
+      origin: 'scene',
+      url: `/api/projects/${encodeURIComponent(acquisition.projectId)}/scenes/${encodeURIComponent(acquisition.id)}/file`,
+      crs: acquisition.crs, transform: acquisition.transform, width: acquisition.width, height: acquisition.height, bands: acquisition.bandCount,
+      dtype: acquisition.bandDtypes?.join(', ') ?? '—', nodata: null, bounds: acquisition.bounds, sizeBytes: acquisition.sizeBytes,
+      contentSha256: null, createdAt: acquisition.registeredAt, georeferenced: geo.mode === 'map', georefReason: geo.reason,
+      bandNames: acquisition.bandNames?.map(name => name ?? '') ?? null, bandSchemaDeclared: Boolean(acquisition.bandNames?.every(Boolean)),
+      sensor: acquisition.sensor, patchGrid: null,
     };
   }
   const dataset = $derived(scene ? sceneRaster(scene) : workspace.dataset);
@@ -96,15 +104,35 @@
     other.acquisitionDateTime.slice(0, 10) !== scene.acquisitionDateTime.slice(0, 10) && sameNativeGrid(scene, other)) : []);
   const compareScene = $derived(compareCandidates.find(other => other.id === compareId));
   const comparison = $derived(compareScene ? { raster: sceneRaster(compareScene), left: scene?.acquisitionDateTime?.slice(0, 10) ?? '', right: compareScene.acquisitionDateTime?.slice(0, 10) ?? '' } : null);
-  const hard = $derived(scene ? null : workspace.field.hard as MapFieldView | null);
-  const uncertainty = $derived(scene ? null : workspace.field.uncertainty as MapFieldView | null);
-  const binaryField = $derived(scene ? null : workspace.field.binary as MapFieldView | null);
+  /**
+   * Model layers are only painted from a field computed for the raster on
+   * screen — the workspace clears its field when the target changes, so this
+   * identity check keeps a stale cross-date product from ever showing.
+   */
+  const fieldIsCurrent = $derived(
+    Boolean(dataset) && workspace.fieldDatasetId === String(dataset!.id),
+  );
+  const hard = $derived(fieldIsCurrent ? workspace.field.hard as MapFieldView | null : null);
+  const uncertainty = $derived(fieldIsCurrent ? workspace.field.uncertainty as MapFieldView | null : null);
+  const binaryField = $derived(fieldIsCurrent ? workspace.field.binary as MapFieldView | null : null);
+  /** A field exists for the active raster + latest run, or one is arriving. */
+  const fieldReady = $derived(
+    Boolean(workspace.latestRun) && fieldIsCurrent && Boolean(hard) && !workspace.fieldError,
+  );
   /** Derived water product is only meaningful when the run recorded one. */
   const binary = $derived(hard?.binary ?? uncertainty?.binary ?? null);
-  const selected = $derived(scene ? null : workspace.map.selected);
+  const selected = $derived(workspace.map.selected);
   /** Provenance of the field currently painted, or null before a first load. */
   const provenance = $derived(hard ?? uncertainty);
   const schemaConflict = $derived(workspace.fieldErrorStatus === 409);
+
+  // One loader for every entry path: date switches (scene → dataset), raster
+  // source changes, hash navigation and fresh runs all converge here.
+  $effect(() => {
+    const target = scene ? scene.datasetId : workspace.dataset?.id ?? null;
+    const run = workspace.latestRun?.id ?? null;
+    if (target && run) void workspace.loadMapField();
+  });
 
   const layers = $derived([
     { id: 'imagery' as const, title: t('map.layer.imagery'), note: t('map.layer.imageryNote'), icon: Scan },
@@ -124,6 +152,17 @@
   ]);
 
   const visible = $derived(Object.values(workspace.map.layers).filter(Boolean).length);
+
+  /**
+   * Labels painted on the map belong to the raster on screen: dataset-scoped
+   * labels are filtered by the active dataset, and dataset-agnostic imports
+   * only appear on the training raster view.
+   */
+  const activeLabels = $derived(
+    workspace.labels.filter((item) =>
+      item.datasetId ? item.datasetId === String(dataset?.id ?? '') : !scene,
+    ),
+  );
 
   /** Adapter reason codes are stable identifiers, not English prose. */
   function georefKey(reason: 'not-georeferenced' | 'unsupported-crs' | 'non-axis-aligned' | null) {
@@ -154,6 +193,16 @@
 
   function toggle(layer: MapLayer) {
     const next = !workspace.map.layers[layer];
+    // A model layer cannot be switched on for a raster the latest run has not
+    // classified (or cannot classify): the switch stays off until a field exists.
+    if (
+      (layer === 'classification' || layer === 'uncertainty' || layer === 'binary') &&
+      next &&
+      workspace.latestRun &&
+      !fieldReady
+    ) {
+      return;
+    }
     workspace.map.layers[layer] = next;
     if (
       (layer === 'classification' || layer === 'uncertainty' || layer === 'binary') &&
@@ -231,9 +280,7 @@
       workspace.map.bandMode = 'true-color';
       workspace.map.layers.imagery = true;
       workspace.map.selected = null;
-      // Leaving a scene for the training raster: the field was dropped with the
-      // scene view, so refetch it — nothing else re-triggers on this change.
-      if (!workspace.mapScene && workspace.latestRun) void workspace.loadMapField();
+      // The field effect re-loads the model layers for the newly active raster.
     }}>
       {#if workspace.dataset}<option value="">{t('intake.dataset')} · {workspace.dataset.name}</option>{/if}
       {#each workspace.scenes as acquisition (acquisition.id)}
@@ -286,11 +333,11 @@
   <div class="map-workspace">
     <div class="stack">
       {#key dataset.id}
-        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} threshold={thresholdShown} labels={scene ? [] : workspace.labels} onselect={select} />
+        <InteractiveMap {dataset} {comparison} {hard} {uncertainty} {binaryField} threshold={thresholdShown} labels={activeLabels} onselect={select} />
         <RasterLayers {dataset} imageryOnly={Boolean(scene)} />
       {/key}
 
-      {#if !scene && workspace.fieldError}
+      {#if workspace.fieldError}
         <div class="alert alert-destructive" role="alert">
           <X size={15} class="alert-icon" />
           <div>
@@ -305,7 +352,7 @@
             <button class="button small" onclick={retryField}><RotateCw size={13} /> {t('common.retry')}</button>
           {/if}
         </div>
-      {:else if !scene && !workspace.latestRun}
+      {:else if !workspace.latestRun}
         <div class="surface section-box hint-box">
           <strong>{t('map.noModel')}</strong>
           <p>{t('map.noModelHint')}</p>
@@ -317,9 +364,10 @@
       <section class="surface layer-panel" aria-labelledby="layer-heading">
         <div class="panel-heading">
           <div class="panel-heading-title"><Layers size={16} strokeWidth={1.75} /><h2 id="layer-heading">{t('map.layers')}</h2></div>
-          <span class="visible-count mono">{t('map.visible', { count: scene ? Number(workspace.map.layers.imagery) : visible })}</span>
+          <span class="visible-count mono">{t('map.visible', { count: visible })}</span>
         </div>
-        {#each (scene ? layers.filter(layer => layer.id === 'imagery' || layer.id === 'threshold') : layers) as layer (layer.id)}
+        {#each layers as layer (layer.id)}
+          {@const needsField = layer.id === 'classification' || layer.id === 'uncertainty' || layer.id === 'binary'}
           <div class="layer-row-group" class:is-off={!workspace.map.layers[layer.id]}>
             <div class="layer-row">
               <span class="layer-icon"><layer.icon size={15} strokeWidth={1.7} /></span>
@@ -329,10 +377,23 @@
                 role="switch"
                 aria-checked={workspace.map.layers[layer.id]}
                 aria-label={layer.title}
+                disabled={needsField && Boolean(workspace.latestRun) && !fieldReady}
                 onclick={() => toggle(layer.id)}
                 ><span></span></button
               >
             </div>
+            {#if needsField && workspace.latestRun && !fieldReady}
+              <div class="layer-field-state">
+                {#if workspace.fieldLoading}
+                  <small role="status"><span class="spinner"></span> {t('common.loading')}</small>
+                {:else}
+                  <small>{t('map.notClassifiedDate')}</small>
+                  <button class="button small" disabled={workspace.fieldLoading} onclick={retryField}>
+                    <RotateCw size={12} /> {t('map.classifyDate')}
+                  </button>
+                {/if}
+              </div>
+            {/if}
             {#if layer.id === 'classification' || layer.id === 'uncertainty'}
               <div class="layer-opacity">
                 <label for={`${layer.id}-opacity`}>
@@ -619,6 +680,11 @@
   .layer-opacity input[type='range']::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 1px solid var(--accent-foreground); }
   .layer-opacity .select { width: 100%; min-height: 30px; font-size: 11px; }
   .is-off .layer-icon { opacity: 0.56; }
+  .layer-field-state { margin: -1px 0 12px 39px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .layer-field-state small { color: var(--warn); font-size: 10.5px; }
+  .layer-field-state .button { flex: none; }
+  .layer-field-state .spinner { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--control-border); border-top-color: var(--accent); animation: geospin 700ms linear infinite; vertical-align: -1px; margin-inline-end: 4px; }
+  @keyframes geospin { to { transform: rotate(360deg); } }
   .feature-name { display: flex; gap: 10px; align-items: center; margin: 0 0 9px; }
   .feature-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 6px; background: var(--control-bg); border: 1px solid var(--control-border); color: var(--info); }
   .feature-icon.sample { background: var(--control-bg); border-color: var(--control-border); color: var(--warn); }

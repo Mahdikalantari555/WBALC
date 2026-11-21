@@ -358,13 +358,20 @@
       styleUncertainty();
       cellLayer.clearLayers();
       const selected = workspace.map.selected;
-      if (selected?.kind !== 'cell') return;
-      const field = workspace.map.layers.uncertainty ? uncertainty : hard;
-      if (!field) return;
-      const window = cellWindow(field.grid, selected.row, selected.col, dataset.width, dataset.height);
+      if (!selected || selected.kind === 'sample') return;
+      let window;
+      if (selected.kind === 'window') {
+        // A recorded pixel window is grid-honest: correct for pool and field
+        // grids alike, which is how review samples are highlighted.
+        window = selected.window;
+      } else {
+        const field = workspace.map.layers.uncertainty ? uncertainty : hard;
+        if (!field) return;
+        window = cellWindow(field.grid, selected.row, selected.col, dataset.width, dataset.height);
+      }
       const rect =
         mode === 'map'
-          ? cellPolygon(field, window)
+          ? windowPolygon(window)
           : L.rectangle(
               [
                 [window.y0, window.x0],
@@ -375,8 +382,8 @@
       if (rect) cellLayer.addLayer(rect);
     }
 
-    /** Cell outline in WGS84, when the dataset can be projected. */
-    function cellPolygon(field: MapFieldView, window: { x0: number; y0: number; x1: number; y1: number }) {
+    /** Window outline in WGS84, when the dataset can be projected. */
+    function windowPolygon(window: { x0: number; y0: number; x1: number; y1: number }) {
       const t = dataset.transform;
       const ctx = {
         crsCode: dataset.crs,
@@ -392,13 +399,12 @@
         [window.x1, window.y1],
         [window.x0, window.y1],
       ]) {
-        // Corners of the cell in the dataset CRS, then to WGS84 for the basemap.
+        // Corners of the window in the dataset CRS, then to WGS84 for the basemap.
         const [mx, my] = applyAffine(t, col, row);
         const wgs = toWgs84(ctx, mx, my);
         if (!wgs) return null;
         corners.push([wgs[1], wgs[0]]);
       }
-      void field;
       return L.polygon(corners, { color: 'var(--warn)', weight: 2, fill: false, interactive: false });
     }
 

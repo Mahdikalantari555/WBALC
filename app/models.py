@@ -97,6 +97,11 @@ class Scene(Base):
     product_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The queryable Dataset row spawned with this scene (same immutable bytes).
+    # Null for legacy scenes pending backfill or after the dataset was removed.
+    dataset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -126,6 +131,10 @@ class Dataset(Base):
     # been recorded at registration time.
     content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Where this row came from: 'upload' (the operator's training raster) or
+    # 'scene' (a queryable copy registered alongside a Scene). Client default
+    # selection keys on this instead of guessing by name or recency.
+    origin: Mapped[str] = mapped_column(String(10), default="upload", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="datasets")

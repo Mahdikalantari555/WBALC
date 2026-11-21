@@ -8,7 +8,7 @@ from pathlib import Path
 import anyio
 from fastapi import APIRouter, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, select, update as sa_update
 
 from ..config import Settings
 from ..models import Dataset, Export, Label, Scene
@@ -240,6 +240,11 @@ async def delete_dataset(project_id: int, dataset_id: int, session: SessionDep) 
         Path(export.path).unlink(missing_ok=True)
     await session.execute(sa_delete(Export).where(Export.dataset_id == dataset_id))
     await session.execute(sa_delete(Label).where(Label.dataset_id == dataset_id))
+    # Keep the scene link honest before the row disappears (SET NULL also covers
+    # this, but SQLite needs the pragma for that path — do it explicitly).
+    await session.execute(
+        sa_update(Scene).where(Scene.dataset_id == dataset_id).values(dataset_id=None)
+    )
     source_path = Path(dataset.path)
     await session.delete(dataset)
     await session.commit()

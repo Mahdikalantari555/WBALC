@@ -8,6 +8,8 @@ interface Body {
   method?: 'least_confidence' | 'margin' | 'entropy';
   batchSize?: number;
   datasetId?: string | null;
+  /** Pool granularity override; null follows the latest checkpoint's resolution. */
+  sampleResolution?: 'patch' | 'pixel' | null;
   /** Only meaningful for the random baseline; the engine records the seed. */
   seed?: number | null;
   note?: string | null;
@@ -30,6 +32,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
       batch_size: Math.min(200, Math.max(1, Number(body.batchSize ?? 20))),
       dataset_id: body.datasetId ? Number(body.datasetId) : null,
       exclude_labeled: true,
+      ...(body.sampleResolution ? { sample_resolution: body.sampleResolution } : {}),
       ...(body.seed != null && Number.isFinite(Number(body.seed))
         ? { seed: Math.max(0, Math.trunc(Number(body.seed))) }
         : {}),

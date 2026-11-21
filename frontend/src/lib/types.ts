@@ -54,6 +54,8 @@ export interface DatasetView {
   id: string;
   projectId: string;
   name: string;
+  /** 'upload' = the operator's training raster; 'scene' = derived from a Scene. */
+  origin: 'upload' | 'scene';
   /** `/api/projects/{project}/datasets/{dataset}/file` — always the adapter. */
   url: string;
   crs: string | null;
@@ -87,6 +89,8 @@ export interface DatasetView {
 export interface SceneView {
   id: string;
   projectId: string;
+  /** The derived Dataset row (same immutable bytes); null on legacy rows. */
+  datasetId: string | null;
   acquisitionDateTime: string | null;
   sensor: 'Sentinel-1' | 'Sentinel-2';
   platform: string | null;

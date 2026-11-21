@@ -37,10 +37,13 @@ export type ViewId = keyof typeof views;
 export type MapLayer = 'imagery' | 'classification' | 'binary' | 'uncertainty' | 'threshold' | 'samples';
 export type { BandMode } from './raster';
 import type { BandMode } from './raster';
+import type { PixelWindow } from './geo';
 export type UncertaintyMethod = 'entropy' | 'margin' | 'least_confidence';
 export type Selection =
   | { kind: 'cell'; row: number; col: number }
-  | { kind: 'sample'; sampleId: string };
+  | { kind: 'sample'; sampleId: string }
+  /** A recorded pixel window, valid against any grid (pool or field). */
+  | { kind: 'window'; window: PixelWindow };
 
 export interface ReviewDraft {
   className: string;
@@ -126,6 +129,8 @@ class Workspace {
     uncertainty: null,
     binary: null,
   });
+  /** Dataset id the current `field` was computed for — never mix rasters. */
+  fieldDatasetId = $state<string | null>(null);
   fieldLoading = $state(false);
   fieldError = $state<string | null>(null);
   /** HTTP status of the last field failure: 409 = band-schema conflict. */
@@ -236,7 +241,13 @@ class Workspace {
       this.scenes = scenes;
       this.labels = labels;
       this.runs = runs;
-      this.datasetId = datasets.find((dataset) => dataset.id === selected)?.id ?? datasets.at(-1)?.id ?? null;
+      // Default to the project's upload (training raster) — never to whichever
+      // scene dataset registered last; keep the operator's explicit selection.
+      const fallback =
+        [...datasets].reverse().find((dataset) => dataset.origin === 'upload')?.id ??
+        datasets[0]?.id ??
+        null;
+      this.datasetId = datasets.find((dataset) => dataset.id === selected)?.id ?? fallback;
       if (this.datasetId !== selected) this.map.bandMode = 'true-color';
       this.arena = {
         primary: runs[0]?.id ?? null,
@@ -246,6 +257,7 @@ class Workspace {
       this.fieldLoading = false;
       this.fieldError = null;
       this.field = { hard: null, uncertainty: null, binary: null };
+      this.fieldDatasetId = null;
       this.schemaOverride = false;
       this.fieldErrorStatus = null;
       this.error = null;
@@ -279,6 +291,7 @@ class Workspace {
     this.fieldLoading = false;
     this.fieldError = null;
     this.field = { hard: null, uncertainty: null, binary: null };
+    this.fieldDatasetId = null;
     this.map.selected = null;
     // A different raster is a different band question: never carry an override.
     this.schemaOverride = false;
@@ -287,14 +300,31 @@ class Workspace {
 
   // ------------------------------------------------------------ map layers
   /**
-   * Map fields are expensive to compute (a full re-inference on the engine:
-   * ~700 ms for a 64×64 grid, more for bigger scenes), and the response is tiny
-   * (~30 KB). One field is cached per dataset+layer+method+run, so toggling a
-   * layer or revisiting the view does not re-infer; a new run or dataset miss
-   * naturally. Failures are never cached.
+   * Map fields are expensive to compute (a full re-inference on the engine),
+   * and the response is tiny. One field is cached per dataset+layer+method+run,
+   * so toggling a layer, switching dates or revisiting the view does not
+   * re-infer; a new run or dataset miss naturally. Failures are never cached.
    */
   private fieldSequence = 0;
   private fieldCache = new globalThis.Map<string, MapFieldView>();
+
+  /**
+   * The raster the map's model layers describe: the scene's own derived dataset
+   * when a scene (a date) is open, the training raster otherwise. Legacy scenes
+   * with no dataset link have no queryable raster — no model layers for them.
+   */
+  activeFieldDataset(): DatasetView | null {
+    const mapScene = this.mapScene;
+    if (mapScene && mapScene.projectId === this.project?.id) {
+      const scene = this.scenes.find((item) => String(item.id) === String(mapScene.id));
+      const derived = scene?.datasetId
+        ? this.datasets.find((item) => item.id === scene.datasetId)
+        : null;
+      if (derived) return derived;
+      if (scene) return null;
+    }
+    return this.dataset;
+  }
 
   private fieldKey(layer: 'hard' | 'uncertainty' | 'binary', datasetId: string) {
     const run = this.latestRun;
@@ -318,8 +348,15 @@ class Workspace {
 
   async loadMapField() {
     const sequence = ++this.fieldSequence;
-    const dataset = this.dataset;
+    const dataset = this.activeFieldDataset();
     if (!dataset || !this.latestRun) return;
+    const target = String(dataset.id);
+    // A different raster clears the painted copy immediately: the previous
+    // date's product must never linger under the new one, even while loading.
+    if (this.fieldDatasetId !== target) {
+      this.field = { hard: null, uncertainty: null, binary: null };
+      this.fieldDatasetId = target;
+    }
     const wantHard = this.map.layers.classification;
     const wantUncertainty = this.map.layers.uncertainty;
     const wantBinary = this.map.layers.binary;
@@ -345,6 +382,7 @@ class Workspace {
       this.fieldLoading = false;
       this.fieldErrorStatus = null;
       this.field = { hard: cachedHard, uncertainty: cachedUncertainty, binary: cachedBinary };
+      this.fieldDatasetId = target;
       this.fieldError = null;
       return;
     }
@@ -383,7 +421,7 @@ class Workspace {
       if (hard) this.fieldCache.set(hardKey, hard);
       if (uncertainty) this.fieldCache.set(uncertaintyKey, uncertainty);
       if (binary) this.fieldCache.set(binaryKey, binary);
-      if (this.fieldCache.size > 8) {
+      if (this.fieldCache.size > 16) {
         const oldest = this.fieldCache.keys().next().value;
         if (oldest !== undefined) this.fieldCache.delete(oldest);
       }
@@ -405,9 +443,11 @@ class Workspace {
   /**
    * Train a checkpoint with an explicit resolution and evaluation protocol.
    *
-   * Neither has a UI default hidden in the engine: patch cells are not pixels,
-   * and a random holdout over neighbouring patches is not a spatial validation.
-   * The caller passes both, and the returned run carries them back.
+   * The engine derives `iteration` server-side, so the client never sends one.
+   * On success the fresh classification becomes visible immediately: the field
+   * cache is invalidated, the classification layer is enabled and — when the
+   * operator is elsewhere — the workspace navigates to the map, whose field
+   * effect loads the new run's product.
    */
   async train(options: {
     resolution: 'patch' | 'pixel';
@@ -419,15 +459,14 @@ class Workspace {
     this.engineError = null;
     this.training = true;
     try {
-      const run = await api.train(this.project.id, {
-        ...options,
-        iteration: (this.runs[0]?.iteration ?? -1) + 1,
-      });
+      const run = await api.train(this.project.id, { ...options });
       this.runs = [run, ...this.runs.filter((item) => item.id !== run.id)];
       this.arena = { primary: run.id, challenger: this.arena.primary ?? this.runs[1]?.id ?? null };
       // A new run invalidates any map field painted from the previous one.
       this.field = { hard: null, uncertainty: null, binary: null };
-      if (this.map.layers.classification || this.map.layers.uncertainty) void this.loadMapField();
+      this.map.layers.classification = true;
+      if (this.view !== 'map') this.go('map');
+      void this.loadMapField();
       return run;
     } catch (error) {
       this.engineError = error instanceof Error ? error.message : String(error);

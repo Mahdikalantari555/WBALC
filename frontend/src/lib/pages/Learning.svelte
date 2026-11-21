@@ -7,10 +7,12 @@
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import PageHeading from '../components/PageHeading.svelte';
+  import SampleContextMap from '../components/SampleContextMap.svelte';
   import { api, ClientError } from '../client/api';
   import { classColor } from '../palette';
   import { renderWindow } from '../raster';
   import { getWorkspace } from '../state.svelte';
+  import { contextWindow, isPixelSample } from '../sample-workflow';
   import { useT } from '../t.svelte';
   import type { QueryHistoryEntry, QuerySampleView } from '../types';
 
@@ -40,7 +42,9 @@
   let undoing = $state(false);
   let importMessage = $state<string | null>(null);
   let importCrs = $state<'EPSG:4326' | 'dataset'>('EPSG:4326');
-  let trainResolution = $state<'patch' | 'pixel'>('patch');
+  // One resolution: pixel. The output map must be at the source's own 10 m
+  // grid; patch cells (one value per 32 px) remain reachable through the API
+  // for research, but they are no longer a training option in the workspace.
   let trainProtocol = $state<'random' | 'spatial'>('random');
   let trainModel = $state<'rf' | 'lightgbm'>('rf');
   /** Set when the engine refused training because the band schemas conflict. */
@@ -86,7 +90,11 @@
     sample ? workspace.datasets.find((item) => item.id === sample.datasetId) ?? workspace.dataset : workspace.dataset,
   );
 
-  /** Exact-window thumbnail of the sampled patch, straight from the source. */
+  /**
+   * Exact-window thumbnail of the sampled patch, straight from the source.
+   * Pixel-mode samples (1×1 windows) render a clamped context window around
+   * the target instead of a one-pixel image.
+   */
   $effect(() => {
     const current = sample;
     const source = dataset;
@@ -97,7 +105,7 @@
     }
     let active = true;
     thumbnailError = null;
-    renderWindow(source.url, source.id, current.window, 'true-color', 190, source.bandNames)
+    renderWindow(source.url, source.id, contextWindow(current.window, source.width, source.height), 'true-color', 190, source.bandNames)
       .then((url) => {
         if (active) thumbnail = url;
       })
@@ -282,17 +290,18 @@
   }
 
   /**
-   * Train with the resolution and validation protocol the operator picked.
+   * Train with the validation protocol the operator picked, always at pixel
+   * resolution: one prediction per source pixel, matching the map product.
    *
-   * Both are explicit because they change what the resulting score means: patch
-   * cells are not independent pixels, and a random holdout on neighbouring
-   * patches is optimistic compared with a spatial block holdout.
+   * The protocol stays explicit because it changes what the resulting score
+   * means: a random holdout on neighbouring pixels is optimistic compared
+   * with a spatial block holdout.
    */
   async function train() {
     if (!workspace.project) return;
     schemaRefused = false;
     const run = await workspace.train({
-      resolution: trainResolution,
+      resolution: 'pixel',
       evaluationStrategy: trainProtocol,
       modelType: trainModel,
       acceptUnverifiedSchema: acceptUnverified,
@@ -404,9 +413,10 @@
     }
   }
 
+  /** Point the map at the sample's own recorded pixel window — grid-honest. */
   function showOnMap(item: QuerySampleView) {
     workspace.map.layers.samples = true;
-    workspace.map.selected = { kind: 'cell', row: item.row, col: item.col };
+    workspace.map.selected = { kind: 'window', window: item.window };
     workspace.go('map');
   }
 
@@ -472,13 +482,7 @@
 
 <div class="surface import-bar train-bar">
   <span class="section-label">{t('learning.train.title')}</span>
-  <label class="field inline-field">
-    {t('learning.train.resolution')}
-    <select class="select" bind:value={trainResolution}>
-      <option value="patch">{t('learning.train.patch')}</option>
-      <option value="pixel">{t('learning.train.pixel')}</option>
-    </select>
-  </label>
+  <span class="resolution-chip" title={t('learning.train.pixelHint')}>{t('learning.train.pixelBadge')}</span>
   <label class="field inline-field">
     {t('learning.train.protocol')}
     <select class="select" bind:value={trainProtocol}>
@@ -501,7 +505,7 @@
     {training ? t('learning.train.running') : t('learning.train.run')}
   </button>
   <span class="import-hint">
-    {trainResolution === 'pixel' ? t('learning.train.pixelHint') : t('learning.train.patchHint')}
+    {t('learning.train.pixelHint')}
     {trainProtocol === 'spatial' ? t('learning.train.spatialHint') : t('learning.train.randomHint')}
   </span>
 </div>
@@ -758,7 +762,11 @@
           <div>
             <small>{t('learning.uncertaintyScore').toUpperCase()}</small>
             <strong class="uncertainty mono">{percent(sample.uncertainty)}</strong>
-            <span>{t('map.grid.patch', { size: Math.round(sample.window.x1 - sample.window.x0) })}</span>
+            <span>
+              {isPixelSample(sample.window)
+                ? t('map.grid.pixel')
+                : t('map.grid.patch', { size: Math.round(sample.window.x1 - sample.window.x0) })}
+            </span>
           </div>
           <div>
             <small>{t('common.dataset').toUpperCase()}</small>
@@ -767,6 +775,16 @@
           </div>
         </div>
       </section>
+
+      {#if dataset}
+        <SampleContextMap
+          {dataset}
+          runId={workspace.latestRun?.id ?? null}
+          samples={queue}
+          {sample}
+          onpick={(sampleId) => focus(sampleId)}
+        />
+      {/if}
 
       <section class="surface section-box label-panel">
         <div class="section-heading">
@@ -899,6 +917,7 @@
   .inline-field.compact { min-width: min(150px, 100%); }
   .train-bar { border-color: var(--control-border); }
   .train-bar .button { margin-bottom: 0; }
+  .resolution-chip { padding: 4px 9px; border: 1px solid var(--success); border-radius: 5px; background: color-mix(in srgb, var(--success) 12%, var(--control-bg)); color: var(--success); font-size: 11px; font-weight: 600; white-space: nowrap; margin-bottom: 9px; }
   .checkbox-field { flex-direction: row; align-items: center; gap: 6px; font-size: 11px; }
   .import-hint { color: var(--faint); font-size: 10.5px; margin-bottom: 9px; }
   .file-button { position: relative; overflow: hidden; }

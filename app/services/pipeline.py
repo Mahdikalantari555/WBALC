@@ -45,13 +45,17 @@ async def run_training(
     *,
     model_type: str = "rf",
     resolution: str = "patch",
-    iteration: int | None = None,
     test_size: float | None = None,
     params: dict | None = None,
     evaluation_strategy: str = "random",
     accept_unverified_schema: bool = False,
 ) -> TrainingRun:
-    """Train on the current labeled data and persist checkpoint + metrics."""
+    """Train on the current labeled data and persist checkpoint + metrics.
+
+    `iteration` is always derived here (one greater than the project's current
+    maximum; the labels' own iterations when no run exists yet), never taken
+    from a client: a repeated client value must not create duplicate iterations.
+    """
     from ..api.deps import project_labels
 
     labels = await project_labels(session, project.id)
@@ -180,18 +184,20 @@ async def run_training(
     except RasterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    if iteration is None:
-        runs = await session.execute(
-            select(TrainingRun.iteration)
-            .where(TrainingRun.project_id == project.id)
-            .order_by(TrainingRun.iteration.desc())
-            .limit(1)
-        )
-        last = runs.scalar_one_or_none()
-        if last is not None:
-            iteration = last + 1
-        else:
-            iteration = max((l.iteration for l in labels), default=0)
+    # Iteration identity is server-owned: one greater than the project's current
+    # maximum run. When no run exists yet, fall back to the labels' iterations
+    # (a cold start that resumes an imported labeling history).
+    runs = await session.execute(
+        select(TrainingRun.iteration)
+        .where(TrainingRun.project_id == project.id)
+        .order_by(TrainingRun.iteration.desc())
+        .limit(1)
+    )
+    last = runs.scalar_one_or_none()
+    if last is not None:
+        iteration = last + 1
+    else:
+        iteration = max((l.iteration for l in labels), default=0)
 
     def _train():
         return train_model(

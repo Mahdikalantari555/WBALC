@@ -372,6 +372,7 @@ def test_additive_migration_preserves_existing_rsal_project(tmp_path):
         (9,),
         (10,),
         (11,),
+        (12,),
     ]
     columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
     assert {"study_area_geometry", "study_area_crs", "classification_config"}.issubset(columns)

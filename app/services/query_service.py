@@ -12,12 +12,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import numpy as np
 
 # Bumped when a strategy's selection rule changes, so an old batch is never
 # silently reinterpreted as if it had been produced by the new rule.
 STRATEGY_VERSION = "query-v1"
+
+# Pixel pools are subsampled to stay tractable: ~50k candidates keeps
+# kcenter/SOM responsive on large scenes without changing the ranking
+# semantics (every candidate is still one real, valid pixel).
+PIXEL_POOL_TARGET = 50_000
+PIXEL_POOL_MAX_STRIDE = 8
+
+
+def pixel_query_stride(height: int, width: int, requested: int | None) -> int:
+    """Stride of a pixel query pool: explicit when requested, else bounded."""
+    if requested is not None:
+        return requested
+    natural = math.ceil(math.sqrt((height * width) / PIXEL_POOL_TARGET))
+    return max(1, min(natural, PIXEL_POOL_MAX_STRIDE))
 
 
 class QuerySelectionError(ValueError):

@@ -7,6 +7,7 @@ interface Body {
   resolution?: 'patch' | 'pixel';
   evaluationStrategy?: 'random' | 'spatial';
   modelType?: 'rf' | 'lightgbm';
+  /** Ignored: the engine derives iteration server-side (max + 1). */
   iteration?: number | null;
   acceptUnverifiedSchema?: boolean;
 }
@@ -43,7 +44,6 @@ export const POST: RequestHandler = async ({ params, request }) => {
       model_type: body.modelType ?? 'rf',
       resolution: body.resolution ?? 'patch',
       evaluation_strategy: body.evaluationStrategy ?? 'random',
-      iteration: body.iteration ?? null,
       params: {},
       accept_unverified_schema: Boolean(body.acceptUnverifiedSchema),
     });

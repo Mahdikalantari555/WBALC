@@ -122,6 +122,7 @@ export function toDataset(dataset: RsalDataset): DatasetView {
     id: String(dataset.id),
     projectId: String(dataset.project_id),
     name: dataset.filename,
+    origin: dataset.origin === 'scene' ? 'scene' : 'upload',
     url: `/api/projects/${dataset.project_id}/datasets/${dataset.id}/file`,
     crs: normalizeCrs(dataset.crs),
     transform: dataset.transform,
@@ -157,6 +158,7 @@ export function toScene(scene: RsalScene): SceneView {
   return {
     id: String(scene.id),
     projectId: String(scene.project_id),
+    datasetId: scene.dataset_id != null ? String(scene.dataset_id) : null,
     acquisitionDateTime: scene.acquisition_datetime,
     sensor: scene.sensor,
     platform: scene.platform,

@@ -282,6 +282,7 @@ async def register_scene(
         project_id=project_id,
         filename=dataset_display,
         path=str(destination),
+        origin="scene",
         crs=raster_metadata["crs"],
         transform=raster_metadata["transform"],
         width=raster_metadata["width"],
@@ -303,6 +304,10 @@ async def register_scene(
     # reference the same immutable upload; deletion checks the remaining owner.
     session.add(scene)
     session.add(active_learning_dataset)
+    # Flush first so the dataset row has an id: the link is what lets clients
+    # target this acquisition for classification, queries and exports.
+    await session.flush()
+    scene.dataset_id = active_learning_dataset.id
     try:
         await session.commit()
         await session.refresh(scene)

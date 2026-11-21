@@ -58,12 +58,16 @@ def run_to_summary(run: TrainingRun) -> RunSummaryOut:
 
 @router.get("/runs", response_model=list[RunSummaryOut])
 async def list_runs(project_id: int, session: SessionDep) -> list[RunSummaryOut]:
-    """Every training run of the project, with lineage status per run."""
+    """Every training run of the project, newest first (newest iteration, then id).
+
+    The order matches the engine's own latest-run selection (`ORDER BY id DESC`),
+    so a client reading `runs[0]` gets the run the engine will actually use.
+    """
     await get_project(session, project_id)
     result = await session.execute(
         select(TrainingRun)
         .where(TrainingRun.project_id == project_id)
-        .order_by(TrainingRun.iteration, TrainingRun.id)
+        .order_by(TrainingRun.iteration.desc(), TrainingRun.id.desc())
     )
     return [run_to_summary(run) for run in result.scalars()]
 
@@ -73,6 +77,9 @@ async def train(project_id: int, payload: TrainRequest, session: SessionDep, set
     """Train RF or LightGBM on the current labeled data (synchronous MVP)."""
     project = await get_project(session, project_id)
     try:
+        # `payload.iteration` is accepted for compatibility but ignored: the
+        # engine owns iteration identity, so a client value can never create
+        # duplicate iterations.
         run = await run_training(
             session,
             settings,
@@ -80,7 +87,6 @@ async def train(project_id: int, payload: TrainRequest, session: SessionDep, set
             model_type=payload.model_type,
             resolution=payload.resolution,
             evaluation_strategy=payload.evaluation_strategy,
-            iteration=payload.iteration,
             test_size=payload.test_size,
             params=payload.params,
             accept_unverified_schema=payload.accept_unverified_schema,

@@ -173,6 +173,8 @@ export interface RsalDataset {
   id: number;
   project_id: number;
   filename: string;
+  /** 'upload' = the operator's training raster; 'scene' = derived from a Scene. */
+  origin?: string;
   crs: string | null;
   transform: number[] | null;
   width: number;
@@ -213,6 +215,8 @@ export interface RsalBandSchema {
 export interface RsalScene {
   id: number;
   project_id: number;
+  /** The derived Dataset row (same bytes); null on legacy rows or after removal. */
+  dataset_id?: number | null;
   acquisition_datetime: string | null;
   platform: string | null;
   sensor: 'Sentinel-1' | 'Sentinel-2';

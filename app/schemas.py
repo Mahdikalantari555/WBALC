@@ -243,6 +243,9 @@ class DatasetOut(BaseModel):
     # Content identity recorded while the bytes were written. None = legacy
     # upload whose bytes were never hashed at registration time.
     content_sha256: str | None = None
+    # 'upload' = the operator's training raster; 'scene' = a queryable copy
+    # registered alongside a Scene (linked from scenes.dataset_id).
+    origin: str = "upload"
 
 
 class SceneOut(BaseModel):
@@ -250,6 +253,9 @@ class SceneOut(BaseModel):
 
     id: int
     project_id: int
+    # The derived Dataset row (same immutable bytes); null on legacy rows or
+    # after the dataset was removed. Clients use it to classify this date.
+    dataset_id: int | None = None
     acquisition_datetime: datetime | None
     platform: str | None
     sensor: Literal["Sentinel-1", "Sentinel-2"]
@@ -402,6 +408,9 @@ class QueryRequest(BaseModel):
     include_embedding: bool = False
     exclude_labeled: bool = True
     hybrid_pool_multiplier: int = Field(default=5, ge=1, le=100)
+    # Pool granularity: 'patch' statistics or raw 'pixel' spectra. None follows
+    # the latest checkpoint's resolution (patch grid when no checkpoint exists).
+    sample_resolution: Literal["patch", "pixel"] | None = None
     patch_size: int | None = Field(default=None, ge=2, le=512)
     stride: int | None = Field(default=None, ge=1, le=512)
     som_rows: int | None = Field(default=None, ge=2, le=32)
@@ -600,6 +609,8 @@ class TrainRequest(BaseModel):
     model_type: Literal["rf", "lightgbm"] = "rf"
     resolution: Literal["patch", "pixel"] = "patch"
     evaluation_strategy: Literal["random", "spatial"] = "random"
+    # Accepted for older clients but IGNORED: the engine derives iteration
+    # server-side (max + 1) so repeated client values cannot collide.
     iteration: int | None = Field(default=None, ge=0)
     test_size: float | None = Field(default=None, gt=0.0, lt=1.0)
     params: dict[str, Any] = Field(default_factory=dict)
